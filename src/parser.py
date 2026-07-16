@@ -1,59 +1,67 @@
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup
 from typing import List
-from models import ConversationMessage
+from src.models import ConversationMessage, DailyConversation
+from collections import OrderedDict
+import re
 
 # ==========================================
 # 策略 1: Gemini HTML 解析器
 # ==========================================
-def parse_gemini_html(file_path: str) -> List[ConversationMessage]:
+def parse_gemini_html(file_path: str) -> List[DailyConversation]:
     """
     专门解析 Gemini 导出的 HTML 格式对话记录。
-    基于 <br> 标签的层级切分用户输入与模型输出。
+    提取时间戳并按天归集对话。
     """
     with open(file_path, 'r', encoding='utf-8') as f:
         html_content = f.read()
     
     soup = BeautifulSoup(html_content, 'lxml')
-    messages = []
-    
-    # 每个外层 cell 对应一次完整的问答交互
     chat_blocks = soup.find_all('div', class_='outer-cell')
     
+    all_messages = []
+    
+    # 正则匹配 "2026年5月21日" 这样的日期
+    date_pattern = re.compile(r'(\d{4})年(\d{1,2})月(\d{1,2})日')
+    
     for block in chat_blocks:
-        # 找到包含内容的 cell
-        content_cell = block.find('div', class_='content-cell')
+        # 精准定位包含对话主体和时间的 cell (具有 mdl-typography--body-1 类)
+        content_cell = block.find('div', class_='mdl-typography--body-1')
         if not content_cell:
             continue
             
         user_text = ""
         assistant_text = ""
-        br_count = 0
+        date_str = "Unknown Date"
+        timestamp_found = False
         
-        # 遍历该 cell 下的所有子节点（包括文本和标签）
+        # 遍历该 cell 下的所有子节点
         for content in content_cell.contents:
-            # 遇到 <br> 标签，计数器加1
             if content.name == 'br':
-                br_count += 1
                 continue
                 
-            # 提取节点的纯文本内容
+            # 提取纯文本
             if content.name:
-                # 如果是 HTML 标签（如 <p>, <a>, <pre>），获取其内部所有文本，用换行符分隔
                 text = content.get_text(separator='\n', strip=True)
             else:
-                # 如果是纯文本节点
                 text = str(content).strip()
                 
             if not text:
                 continue
+            
+            # 1. 检查并提取时间戳
+            match = date_pattern.search(text)
+            if match:
+                year, month, day = match.groups()
+                date_str = f"{year}-{int(month):02d}-{int(day):02d}"
+                timestamp_found = True
+                continue # 时间戳节点本身不作为对话内容
                 
-            # 根据观察的结构：
-            # 第1个 <br> 之前的内容是 User 的提问
-            # 第1~2个 <br> 之间是时间戳（忽略）
-            # 第2个 <br> 之后是 Assistant 的回答
-            if br_count == 0:
-                user_text += text + "\n"
-            elif br_count >= 2:
+            # 2. 根据是否找到时间戳，划分 User 和 Assistant 区域
+            if not timestamp_found:
+                # 过滤掉附件等无用提示行
+                if "Attached" not in text and not text.startswith("-"):
+                    user_text += text + "\n"
+            else:
                 assistant_text += text + "\n"
                 
         # 清理提取到的文本
@@ -64,18 +72,27 @@ def parse_gemini_html(file_path: str) -> List[ConversationMessage]:
         if user_text.startswith("Prompted"):
             user_text = user_text[len("Prompted"):].strip()
             
-        # 如果有有效内容，则添加到消息列表中
+        # 添加到消息列表
         if user_text:
-            messages.append(ConversationMessage(role="user", content=user_text))
+            all_messages.append(ConversationMessage(role="user", content=user_text, date=date_str))
         if assistant_text:
-            messages.append(ConversationMessage(role="assistant", content=assistant_text))
+            all_messages.append(ConversationMessage(role="assistant", content=assistant_text, date=date_str))
+            
+    # 按天归集对话
+    grouped_by_date = OrderedDict()
+    for msg in all_messages:
+        if msg.date not in grouped_by_date:
+            grouped_by_date[msg.date] = []
+        grouped_by_date[msg.date].append(msg)
         
-    return messages
+    # 转换为 DailyConversation 对象列表
+    return [DailyConversation(date=d, messages=m) for d, m in grouped_by_date.items()]
 
 # ==========================================
-# 策略 2: Markdown 解析器 (保留以备不时之需)
+# 策略 2: Markdown 解析器 (保留备用)
 # ==========================================
-def parse_markdown(file_path: str) -> List[ConversationMessage]:
+def parse_markdown(file_path: str) -> List[DailyConversation]:
+    # 此处简化处理，Markdown 暂不拆分日期，统一归为 Unknown Date
     import re
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -88,16 +105,16 @@ def parse_markdown(file_path: str) -> List[ConversationMessage]:
         role = "user" if role_str.lower() in ["user", "you"] else "assistant"
         clean_text = text.strip()
         if clean_text:
-            messages.append(ConversationMessage(role=role, content=clean_text))
+            messages.append(ConversationMessage(role=role, content=clean_text, date="Unknown Date"))
             
-    return messages
+    return [DailyConversation(date="Unknown Date", messages=messages)]
 
 # ==========================================
 # 统一解析路由入口
 # ==========================================
-def parse_conversation(file_path: str) -> List[ConversationMessage]:
+def parse_conversation(file_path: str) -> List[DailyConversation]:
     """
-    根据文件后缀自动路由到对应的解析器。
+    根据文件后缀自动路由到对应的解析器，返回按天归集的对话列表。
     """
     if file_path.endswith('.html'):
         return parse_gemini_html(file_path)
@@ -105,11 +122,3 @@ def parse_conversation(file_path: str) -> List[ConversationMessage]:
         return parse_markdown(file_path)
     else:
         raise ValueError(f"暂不支持的文件格式: {file_path}")
-
-
-if __name__ == "__main__":
-    # 测试用例
-    test_file = "tests\gemini_1000.html"
-    messages = parse_conversation(test_file)
-    print(messages)
-    print(len(messages))
