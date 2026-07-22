@@ -8,10 +8,17 @@ class ConversationMessage(BaseModel):
     date: str = Field(default="Unknown Date", description="对话发生的日期，格式为 YYYY-MM-DD")
 
 class WorkItem(BaseModel):
-    """从对话中抽取的单个工作项"""
+    """最终生成单日工作日志的完整数据结构"""
     task: str = Field(description="具体完成的任务名称，简洁概括")
     detail: str = Field(description="任务的解决过程、关键决策或主要产出")
     evidence: str = Field(description="对话中支持该任务提取的原始文本片段，必须一字不差")
+
+class CandidateItem(BaseModel):
+    """LLM 聚类生成的候选工作项，等待用户筛选"""
+    topic: str = Field(description="该段对话的核心主题或任务名称")
+    summary: str = Field(description="对该主题下对话内容的简要总结")
+    evidence: str = Field(description="对话中支持该主题的原始文本片段，必须一字不差")
+    dates: List[str] = Field(default_factory=list, description="该主题涉及的日期列表；跨天合并后会有多个日期")
 
 class WorklogData(BaseModel):
     """最终生成单日工作日志的完整数据结构"""

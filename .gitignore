@@ -37,3 +37,16 @@ Thumbs.db
 # Environment Variables
 .env
 .env.local
+
+# 解析输出（CLI 默认输出到 ./output/）
+output/
+output_*/
+*.log
+
+# pytest 缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# WorkBuddy 工作日志（个人 memory，不入库）
+.workbuddy/

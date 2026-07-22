@@ -20,8 +20,9 @@ def parse_gemini_html(file_path: str) -> List[DailyConversation]:
     
     all_messages = []
     
-    # 正则匹配 "2026年5月21日" 这样的日期
-    date_pattern = re.compile(r'(\d{4})年(\d{1,2})月(\d{1,2})日')
+    # 正则匹配时间戳 "2026年5月21日 10:43:45 HKT"
+    # 必须含时间部分，避免误匹配对话正文中提及的日期（如法规"自2009年1月1日起实施"）
+    date_pattern = re.compile(r'(\d{4})年(\d{1,2})月(\d{1,2})日\s+\d{1,2}:\d{2}:\d{2}')
     
     for block in chat_blocks:
         # 精准定位包含对话主体和时间的 cell (具有 mdl-typography--body-1 类)
