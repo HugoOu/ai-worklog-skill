@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-worklog-skill"
+version = "0.1.0"
+description = "多平台 LLM 对话记录解析为统一格式，供工作日志生成使用"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "宇豪" }]
+dependencies = [
+    "pydantic>=2.5",
+    "typer>=0.9",
+    "rich>=13.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "python-dotenv>=1.0",
+    "openai>=1.0",
+]
+
+[project.optional-dependencies]
+# MCP 包装（Phase 3 才用）
+mcp = ["mcp>=0.9"]
+# ChatGPT ZIP+媒体场景（后续多模态扩展时用）
+media = ["openai-export-parser"]
+# 备用解析器（后续补全 Claude/Grok/Mistral 时用）
+parsers = ["llm-logparser"]
+# 开发依赖
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[project.scripts]
+aiworklog = "src.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# tests/legacy/ 下是脚本式示例（直接 print，非 pytest 函数），不收集
+norecursedirs = ["tests/legacy"]
