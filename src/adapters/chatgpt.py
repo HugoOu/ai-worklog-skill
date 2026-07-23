@@ -8,6 +8,7 @@
 - content.content_type == "text" 的 parts 提取文本
 - image_asset_pointer / code 等非文本 part 暂时跳过（Fragment 字段保留待后续扩展）
 - reasoning 字段（o1/o3 系列思维链）保留，作为 Fragment(kind="reasoning")
+- 清理 ChatGPT 内联实体标记（\ue200entity\ue202[...]\ue201 → 纯文本）
 
 ChatGPT conversations.json 结构：
     [
@@ -15,18 +16,21 @@ ChatGPT conversations.json 结构：
         "title": "...",
         "create_time": 1716234567.89,    # Unix 时间戳
         "update_time": 1716234999.12,
+        "default_model_slug": "auto",     # 会话级默认模型（'auto' 表示路由）
         "mapping": {
-          "ROOT": {"id":"ROOT","message":null,"parent":null,"children":["aaa"]},
-          "aaa":  {"id":"aaa","message":{...},"parent":"ROOT","children":["bbb"]},
+          "client-created-root": {"id":"...","message":null,"parent":null,"children":["aaa"]},
+          "aaa":  {"id":"aaa","message":{...},"parent":"client-created-root","children":["bbb"]},
           ...
         },
-        "id": "conv-001"
+        "id": "conv-001",
+        "conversation_id": "conv-001"
       }
     ]
 """
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,6 +44,15 @@ from src.unified_schema import (
 
 # ChatGPT 导出中 author.role 的合法值
 _VALID_ROLES = {"user", "assistant", "system", "tool"}
+
+# ChatGPT 内联实体标记正则：\ue200 + 类型词 + \ue202 + [JSON数组] + \ue201
+# 例：\ue200entity\ue202["organization","上海财经大学","university in shanghai china"]\ue201
+# JSON 数组格式：[type, name, disambiguation]
+_INLINE_MARKER_PATTERN = re.compile(
+    r"\ue200\w+\ue202(\[.*?\])\ue201"
+)
+# 兜底：清理残留的孤立私有区字符（U+E200 ~ U+E202）
+_STRAY_PRIVATE_CHARS_PATTERN = re.compile(r"[\ue200-\ue202]")
 
 
 class ChatGPTAdapter(BaseAdapter):
@@ -220,6 +233,8 @@ class ChatGPTAdapter(BaseAdapter):
         # 本期不处理工具调用
 
         content_text = "\n".join(p for p in text_parts if p).strip()
+        # 清理 ChatGPT 内联实体标记（\ue200entity\ue202[...]\ue201 → 纯文本）
+        content_text = self._clean_inline_markers(content_text)
         # 跳过完全无内容且无 fragments 的消息
         if not content_text and not fragments:
             return None
@@ -249,6 +264,44 @@ class ChatGPTAdapter(BaseAdapter):
             source="chatgpt_export",
             upstream_ref=msg.get("id"),
         )
+
+    # ==========================================
+    # 内部：清理 ChatGPT 内联实体标记
+    # ==========================================
+    @staticmethod
+    def _clean_inline_markers(text: str) -> str:
+        """清理 ChatGPT 导出文本中的内联实体标记。
+
+        ChatGPT 在 assistant 回答中用 Unicode 私有区字符标记实体引用：
+            \\ue200entity\\ue202["organization","上海财经大学","university in shanghai china"]\\ue201
+
+        清理规则：
+        - 从标记内的 JSON 数组提取第二个元素（实体名，如 "上海财经大学"）作为替换文本
+        - 提取失败则删除整个标记
+        - 兜底清理残留的孤立私有区字符（U+E200 ~ U+E202）
+
+        Args:
+            text: 含可能标记的原始文本
+
+        Returns:
+            清理后的纯文本
+        """
+        def _replace_marker(match: re.Match) -> str:
+            try:
+                arr = json.loads(match.group(1))
+                # JSON 数组格式：[type, name, disambiguation]
+                if isinstance(arr, list) and len(arr) >= 2:
+                    name = arr[1]
+                    if isinstance(name, str) and name:
+                        return name
+            except (json.JSONDecodeError, IndexError, TypeError):
+                pass
+            return ""  # 提取失败则删除标记
+
+        text = _INLINE_MARKER_PATTERN.sub(_replace_marker, text)
+        # 兜底：清理残留的孤立私有区字符
+        text = _STRAY_PRIVATE_CHARS_PATTERN.sub("", text)
+        return text
 
     # ==========================================
     # 内部：Unix 时间戳 → datetime

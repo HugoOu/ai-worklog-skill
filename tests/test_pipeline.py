@@ -63,13 +63,13 @@ class TestGetAdapter:
 
 
 # ==========================================
-# run() 端到端测试
+# run() 端到端测试 — 基于 examples/ 真实数据
 # ==========================================
 class TestRun:
     def test_run_chatgpt_auto(self, chatgpt_sample_path: Path):
-        """ChatGPT 自动探测端到端。"""
+        """ChatGPT 自动探测端到端（真实数据含 4 个会话）。"""
         sessions = run(chatgpt_sample_path, provider="auto")
-        assert len(sessions) == 2
+        assert len(sessions) == 4
         assert all(s.provider == "openai" for s in sessions)
 
     def test_run_gemini_auto(self, gemini_sample_path: Path):
@@ -81,17 +81,20 @@ class TestRun:
     def test_run_chatgpt_explicit_provider(self, chatgpt_sample_path: Path):
         """显式指定 provider。"""
         sessions = run(chatgpt_sample_path, provider="openai")
-        assert len(sessions) == 2
+        assert len(sessions) == 4
 
     def test_run_timezone_normalization(self, chatgpt_sample_path: Path):
-        """时间戳应归一化到 Asia/Shanghai (+08:00)。"""
+        """时间戳应归一化到 Asia/Shanghai (+08:00)。
+
+        真实数据"研究生生活费预算"会话 create_time=1771862876.508145
+        → 2026-02-23 16:07:56 UTC → 2026-02-24 00:07:56 +08:00
+        """
         sessions = run(chatgpt_sample_path, provider="openai", timezone_str="Asia/Shanghai")
-        conv1 = next(s for s in sessions if s.id == "conv-001")
-        first_msg = conv1.messages[0]
-        # 2026-05-21 10:43:45 +08:00
-        assert first_msg.created_at == datetime(2026, 5, 21, 10, 43, 45, tzinfo=tz_sh)
-        # 时区偏移应为 +08:00
-        assert first_msg.created_at.utcoffset() == timedelta(hours=8)
+        budget_conv = next(s for s in sessions if s.title == "研究生生活费预算")
+        # 会话级 created_at 应为 +08:00
+        assert budget_conv.created_at.utcoffset() == timedelta(hours=8)
+        # 具体时间：2026-02-24 00:07:56 +08:00
+        assert budget_conv.created_at == datetime(2026, 2, 24, 0, 7, 56, 508145, tzinfo=tz_sh)
 
     def test_run_export_json(self, chatgpt_sample_path: Path, tmp_path: Path):
         """应导出 JSON 文件。"""
@@ -103,11 +106,11 @@ class TestRun:
         out_file = outdir / "unified_sessions.json"
         assert out_file.exists()
         data = json.loads(out_file.read_text(encoding="utf-8"))
-        assert len(data) == 2
+        assert len(data) == 4
         assert data[0]["provider"] == "openai"
 
     def test_run_export_jsonl(self, chatgpt_sample_path: Path, tmp_path: Path):
-        """应导出 JSONL 文件（每行一个 JSON）。"""
+        """应导出 JSONL 文件（每行一个 JSON，4 行）。"""
         outdir = tmp_path / "output"
         sessions = run(
             chatgpt_sample_path, provider="openai",
@@ -116,14 +119,17 @@ class TestRun:
         out_file = outdir / "unified_sessions.jsonl"
         assert out_file.exists()
         lines = out_file.read_text(encoding="utf-8").strip().split("\n")
-        assert len(lines) == 2
+        assert len(lines) == 4
         for line in lines:
             obj = json.loads(line)
             assert "id" in obj
             assert "messages" in obj
 
     def test_run_group_by_date(self, chatgpt_sample_path: Path, tmp_path: Path):
-        """group_by_date=True 应额外输出 daily_conversations.json。"""
+        """group_by_date=True 应额外输出 daily_conversations.json。
+
+        真实数据含 4 天：2025-11-01 / 2026-02-24 / 2026-03-26 / 2026-06-09
+        """
         outdir = tmp_path / "output"
         run(
             chatgpt_sample_path, provider="openai",
@@ -132,10 +138,11 @@ class TestRun:
         daily_file = outdir / "daily_conversations.json"
         assert daily_file.exists()
         data = json.loads(daily_file.read_text(encoding="utf-8"))
-        # ChatGPT 样本含 2 天（2026-05-21 和 2026-05-22）
         dates = {d["date"] for d in data}
-        assert "2026-05-21" in dates
-        assert "2026-05-22" in dates
+        assert "2025-11-01" in dates
+        assert "2026-02-24" in dates
+        assert "2026-03-26" in dates
+        assert "2026-06-09" in dates
 
     def test_run_file_not_found(self, tmp_path: Path):
         """文件不存在应抛 FileNotFoundError。"""

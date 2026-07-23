@@ -50,3 +50,6 @@ htmlcov/
 
 # WorkBuddy 工作日志（个人 memory，不入库）
 .workbuddy/
+
+# 真实对话导出样本（含个人/敏感内容，不入库；测试时本地提供）
+examples/conversations.json
