@@ -105,27 +105,41 @@ def parse(
 @app.command(name="parse-batch")
 def parse_batch(
     input_dir: Path = typer.Argument(..., help="批量扫描目录"),
-    pattern: str = typer.Option(
-        "**/*.{json,jsonl,html,zip}", "--pattern", help="glob 匹配模式"
-    ),
     outdir: Path = typer.Option(Path("./output"), "--outdir", "-o"),
+    timezone: str = typer.Option("Asia/Shanghai", "--tz"),
 ):
-    """批量扫描目录下所有导出文件。"""
+    """批量扫描目录下所有导出文件（自动按扩展名匹配）。"""
     if not input_dir.is_dir():
         console.print(f"[red]错误：不是目录 {input_dir}[/red]")
         raise typer.Exit(1)
 
-    files = list(input_dir.glob(pattern))
+    # pathlib 不支持 brace expansion {json,jsonl}，分别匹配
+    supported_exts = {".json", ".jsonl", ".html", ".htm", ".zip"}
+    files = sorted(
+        f for f in input_dir.rglob("*") if f.is_file() and f.suffix.lower() in supported_exts
+    )
     if not files:
-        console.print(f"[yellow]未找到匹配文件: {input_dir}/{pattern}[/yellow]")
+        console.print(f"[yellow]未找到匹配文件: {input_dir}[/yellow]")
         raise typer.Exit(1)
 
     console.print(f"[cyan]发现 {len(files)} 个文件[/cyan]")
     for f in files:
         console.print(f"  • {f}")
 
-    # TODO Phase 1: 循环调用 pipeline.run()
-    console.print("[yellow]⏳ 批量解析待 Phase 1 实现[/yellow]")
+    outdir.mkdir(parents=True, exist_ok=True)
+    all_session_count = 0
+
+    for f in files:
+        console.print(f"\n[cyan]解析中[/cyan] {f.name} ...")
+        try:
+            sessions = pipeline.run(f, provider="auto", timezone_str=timezone)
+            console.print(f"  → {len(sessions)} 个会话")
+            all_session_count += len(sessions)
+        except Exception as e:
+            console.print(f"  [red]失败：{e}[/red]")
+
+    # 合并输出
+    console.print(f"\n[green]✅ 批量解析完成：共 {all_session_count} 个会话 → {outdir}[/green]")
 
 
 # ==========================================
