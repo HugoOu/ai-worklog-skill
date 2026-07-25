@@ -4,10 +4,12 @@ typer CLI 入口 — Agent 与 shell 调用的统一界面。
 命令:
   aiworklog parse <input> [-p auto] [-f json] [-o ./output]
   aiworklog parse-batch <dir> [--pattern] [-o ./output]
+  aiworklog cluster <input1> <input2> ... [-o ./output] [--dry-run]
   aiworklog query [--db] [--date] [--provider] [--keyword]
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -143,6 +145,120 @@ def query(
 
     # TODO Phase 2: 实现 SQLite 查询
     console.print("[yellow]⏳ 查询功能待 Phase 2 实现[/yellow]")
+
+
+# ==========================================
+# cluster — 端到端聚类（parse → bridge → clustering）
+# ==========================================
+@app.command()
+def cluster(
+    input_paths: list[Path] = typer.Argument(
+        ...,
+        help="多个导出文件路径（支持混合平台，如 chatgpt.json gemini.html）",
+    ),
+    outdir: Path = typer.Option(Path("./output"), "--outdir", "-o", help="输出目录"),
+    timezone: str = typer.Option("Asia/Shanghai", "--tz", help="时区归一化目标"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="只做 parse + bridge 按天归集，不调 LLM 聚类（快速预览数据分布）",
+    ),
+):
+    """端到端：解析多平台导出 → 按天归集 → LLM 聚类 → 输出候选工作项。
+
+    示例:
+      aiworklog cluster examples/conversations.json examples/gemini_1000.html -o ./output
+      aiworklog cluster examples/conversations.json --dry-run  # 只看按天归集，不调 LLM
+    """
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # ---- 1. 解析每个输入文件，合并所有 UnifiedSession ----
+    from src.unified_schema import UnifiedSession
+
+    all_sessions: list[UnifiedSession] = []
+    for path in input_paths:
+        if not path.exists():
+            console.print(f"[red]错误：文件不存在 {path}[/red]")
+            raise typer.Exit(1)
+        console.print(f"[cyan]解析中[/cyan] {path.name} ...")
+        sessions = pipeline.run(path, provider="auto", timezone_str=timezone)
+        console.print(f"  → {len(sessions)} 个会话")
+        all_sessions.extend(sessions)
+
+    if not all_sessions:
+        console.print("[red]错误：未解析出任何会话[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[cyan]合并后[/cyan] 共 {len(all_sessions)} 个会话")
+
+    # ---- 2. bridge: 按天归集（跨平台合并）----
+    from src.bridge import unified_to_daily
+
+    daily = unified_to_daily(all_sessions)
+    console.print(f"[cyan]按天归集[/cyan] 共 {len(daily)} 天")
+
+    # 输出 daily_conversations.json
+    daily_file = outdir / "daily_conversations.json"
+    daily_file.write_text(
+        json.dumps([d.model_dump(mode="json") for d in daily], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    # 打印按天归集摘要
+    table = Table(title="按天归集摘要")
+    table.add_column("日期", style="cyan")
+    table.add_column("消息数", justify="right", style="yellow")
+    table.add_column("内容预览", style="white")
+    for d in daily:
+        preview = d.messages[0].content[:50].replace("\n", " ") + "..." if d.messages else ""
+        table.add_row(d.date, str(len(d.messages)), preview)
+    console.print(table)
+
+    # 保存合并后的 unified_sessions.json
+    unified_file = outdir / "unified_sessions.json"
+    unified_file.write_text(
+        json.dumps([s.model_dump(mode="json") for s in all_sessions], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    if dry_run:
+        console.print("\n[yellow]⏸️  --dry-run 模式：跳过 LLM 聚类[/yellow]")
+        console.print(f"输出: {daily_file}")
+        console.print(f"      {unified_file}")
+        return
+
+    # ---- 3. LLM 聚类（Map-Reduce）----
+    from src.clustering import MapReduceClustering
+
+    console.print(f"\n[cyan]开始 LLM 聚类[/cyan]（Map: {len(daily)} 天 → Reduce: 跨天合并）...")
+    console.print("[dim]每天独立调 LLM 提取候选，可能需要等待...[/dim]")
+
+    clusterer = MapReduceClustering()
+    candidates = clusterer.cluster(daily)
+
+    # ---- 4. 输出候选工作项 ----
+    candidates_file = outdir / "candidates.json"
+    candidates_file.write_text(
+        json.dumps([c.model_dump(mode="json") for c in candidates], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    # 打印聚类结果摘要
+    console.print(f"\n[green]✅ 聚类完成：{len(candidates)} 个候选工作项[/green]\n")
+
+    result_table = Table(title="候选工作项")
+    result_table.add_column("#", justify="right", style="dim")
+    result_table.add_column("主题", style="cyan")
+    result_table.add_column("日期", style="yellow")
+    result_table.add_column("摘要", style="white")
+    for i, c in enumerate(candidates, 1):
+        dates_str = ", ".join(c.dates) if c.dates else "无"
+        result_table.add_row(str(i), c.topic, dates_str, c.summary[:60] + "..." if len(c.summary) > 60 else c.summary)
+    console.print(result_table)
+
+    console.print(f"\n输出文件:")
+    console.print(f"  [cyan]unified_sessions.json[/cyan]    — 统一格式解析结果（{len(all_sessions)} 会话）")
+    console.print(f"  [cyan]daily_conversations.json[/cyan] — 按天归集（{len(daily)} 天）")
+    console.print(f"  [cyan]candidates.json[/cyan]          — 聚类候选工作项（{len(candidates)} 个）")
 
 
 # ==========================================
