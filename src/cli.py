@@ -276,6 +276,112 @@ def cluster(
 
 
 # ==========================================
+# generate — 从候选工作项生成工作日志
+# ==========================================
+@app.command()
+def generate(
+    candidates_file: Path = typer.Argument(
+        ..., help="candidates.json 路径（cluster 命令的输出）"
+    ),
+    select: Optional[str] = typer.Option(
+        None, "--select", "-s",
+        help="指定选中索引，逗号分隔（如 '2,3,9-11'，从 1 开始）",
+    ),
+    date_range: Optional[str] = typer.Option(
+        None, "--date-range", "-d",
+        help="日期范围筛选（如 '2026-05-20:2026-05-21'）",
+    ),
+    interactive: bool = typer.Option(
+        False, "--interactive", "-i",
+        help="交互式筛选（终端显示候选列表，输入编号选择）",
+    ),
+    all_items: bool = typer.Option(
+        False, "--all", help="全选所有候选（不筛选）",
+    ),
+    polish: bool = typer.Option(
+        False, "--polish", help="调 LLM 润色为正式工作日志语言（有费用）",
+    ),
+    outdir: Path = typer.Option(
+        Path("./output"), "--outdir", "-o", help="输出目录",
+    ),
+):
+    """从候选工作项生成 Markdown 工作日志。
+
+    筛选方式（互斥，优先级从高到低）：
+      --select 2,3,9     指定索引
+      --date-range       日期范围
+      --interactive      交互式选择
+      --all              全选
+
+    示例:
+      aiworklog generate candidates.json --select 2,3,9 -o ./output
+      aiworklog generate candidates.json --date-range 2026-05-20:2026-05-21
+      aiworklog generate candidates.json --interactive
+      aiworklog generate candidates.json --all
+    """
+    import json as _json
+    from src.models import CandidateItem
+    from src.generator import (
+        filter_by_indices, filter_by_date_range, interactive_select,
+        generate_worklog, _parse_indices,
+    )
+
+    if not candidates_file.exists():
+        console.print(f"[red]错误：文件不存在 {candidates_file}[/red]")
+        raise typer.Exit(1)
+
+    # 加载候选
+    data = _json.loads(candidates_file.read_text(encoding="utf-8"))
+    candidates = [CandidateItem(**c) for c in data]
+    console.print(f"[cyan]加载候选[/cyan] {len(candidates)} 个")
+
+    # 筛选
+    if select:
+        indices = _parse_indices(select)
+        selected = filter_by_indices(candidates, indices)
+        console.print(f"[cyan]索引筛选[/cyan] {select} → {len(selected)} 个")
+    elif date_range:
+        parts = date_range.split(":")
+        if len(parts) != 2:
+            console.print("[red]错误：日期范围格式应为 'YYYY-MM-DD:YYYY-MM-DD'[/red]")
+            raise typer.Exit(1)
+        selected = filter_by_date_range(candidates, parts[0], parts[1])
+        console.print(f"[cyan]日期筛选[/cyan] {date_range} → {len(selected)} 个")
+    elif interactive:
+        selected = interactive_select(candidates)
+        console.print(f"[cyan]交互式筛选[/cyan] → {len(selected)} 个")
+    elif all_items:
+        selected = candidates
+        console.print(f"[cyan]全选[/cyan] {len(selected)} 个")
+    else:
+        console.print("[yellow]未指定筛选方式，默认全选。用 --select/--date-range/--interactive 筛选[/yellow]")
+        selected = candidates
+
+    if not selected:
+        console.print("[yellow]未选中任何候选，退出[/yellow]")
+        raise typer.Exit(0)
+
+    # 生成 Markdown
+    console.print(f"[cyan]生成工作日志[/cyan]（polish={polish}）...")
+    from src.generator import generate_markdown
+    md = generate_markdown(selected, polish)
+
+    # 输出
+    outdir.mkdir(parents=True, exist_ok=True)
+    out_file = outdir / "worklog.md"
+    out_file.write_text(md, encoding="utf-8")
+
+    console.print(f"\n[green]✅ 工作日志已生成：{out_file}[/green]")
+    console.print(f"   含 {len(selected)} 个工作项")
+
+    # 打印预览
+    console.print("\n[dim]--- 预览（前 500 字符）---[/dim]")
+    console.print(md[:500])
+    if len(md) > 500:
+        console.print("[dim]...（完整内容见 worklog.md）[/dim]")
+
+
+# ==========================================
 # adapters — 列出已注册 adapter
 # ==========================================
 @app.command()

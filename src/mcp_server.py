@@ -227,6 +227,88 @@ def _build_server() -> "FastMCP":
             "adapters": adapters,
         }, ensure_ascii=False, indent=2)
 
+    # ==========================================
+    # 工具 4: generate_worklog
+    # ==========================================
+    @mcp.tool()
+    def generate_worklog(
+        candidates_path: str,
+        select_indices: str = "",
+        date_range: str = "",
+        polish: bool = False,
+        outdir: str = "./output",
+    ) -> str:
+        """
+        从候选工作项（candidates.json）生成 Markdown 工作日志。
+
+        筛选方式（互斥，优先级从高到低）：
+        - select_indices: 逗号分隔索引（如 "2,3,9"），空字符串=全选
+        - date_range: 日期范围（如 "2026-05-20:2026-05-21"），空字符串=不筛选
+
+        Args:
+            candidates_path: candidates.json 文件路径
+            select_indices: 选中索引（逗号分隔，从 1 开始），空=不按索引筛选
+            date_range: 日期范围 "YYYY-MM-DD:YYYY-MM-DD"，空=不按日期筛选
+            polish: 是否调 LLM 润色为正式工作日志语言
+            outdir: 输出目录（生成 worklog.md）
+
+        Returns:
+            JSON 字符串，含 success 字段和生成的 Markdown 工作日志内容。
+        """
+        try:
+            from src.models import CandidateItem
+            from src.generator import (
+                filter_by_indices, filter_by_date_range,
+                generate_markdown, _parse_indices,
+            )
+
+            # 加载候选
+            path = Path(candidates_path)
+            if not path.exists():
+                return json.dumps({"success": False, "error": f"文件不存在: {candidates_path}"}, ensure_ascii=False)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            candidates = [CandidateItem(**c) for c in data]
+
+            # 筛选
+            if select_indices:
+                indices = _parse_indices(select_indices)
+                selected = filter_by_indices(candidates, indices)
+            elif date_range:
+                parts = date_range.split(":")
+                if len(parts) != 2:
+                    return json.dumps({"success": False, "error": "日期范围格式应为 YYYY-MM-DD:YYYY-MM-DD"}, ensure_ascii=False)
+                selected = filter_by_date_range(candidates, parts[0], parts[1])
+            else:
+                selected = candidates  # 默认全选
+
+            if not selected:
+                return json.dumps({"success": True, "message": "未选中任何候选", "worklog": ""}, ensure_ascii=False)
+
+            # 生成 Markdown
+            md = generate_markdown(selected, polish)
+
+            # 写入文件
+            outdir_path = Path(outdir)
+            outdir_path.mkdir(parents=True, exist_ok=True)
+            out_file = outdir_path / "worklog.md"
+            out_file.write_text(md, encoding="utf-8")
+
+            result = {
+                "success": True,
+                "selected_count": len(selected),
+                "total_candidates": len(candidates),
+                "output_file": str(out_file),
+                "worklog": md,
+            }
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            return json.dumps({
+                "success": False,
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }, ensure_ascii=False, indent=2)
+
     return mcp
 
 
