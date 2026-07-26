@@ -299,7 +299,8 @@ def generate(
         False, "--all", help="全选所有候选（不筛选）",
     ),
     polish: bool = typer.Option(
-        False, "--polish", help="调 LLM 润色为正式工作日志语言（有费用）",
+        True, "--polish/--no-polish",
+        help="调 LLM 润色为第一人称工作日志（默认开启，用 --no-polish 关闭）",
     ),
     outdir: Path = typer.Option(
         Path("./output"), "--outdir", "-o", help="输出目录",

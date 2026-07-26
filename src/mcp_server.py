@@ -235,7 +235,7 @@ def _build_server() -> "FastMCP":
         candidates_path: str,
         select_indices: str = "",
         date_range: str = "",
-        polish: bool = False,
+        polish: bool = True,
         outdir: str = "./output",
     ) -> str:
         """

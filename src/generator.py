@@ -137,17 +137,19 @@ def _parse_indices(raw: str) -> List[int]:
 # CandidateItem → WorkItem 转换
 # ==========================================
 
-def candidate_to_workitem(cand: CandidateItem, polish: bool = False) -> WorkItem:
+def candidate_to_workitem(cand: CandidateItem, polish: bool = True) -> WorkItem:
     """将 CandidateItem 转换为 WorkItem。
 
-    默认直接映射字段（不调 LLM）：
-      topic   → task
-      summary → detail
-      evidence → evidence
+    默认调 LLM 润色为第一人称工作日志语气：
+      topic   → task（动宾结构任务名）
+      summary → detail（第一人称"我做了什么"）
+      evidence → evidence（从原文中筛选工作成果片段）
+
+    polish=False 时直接映射字段（不调 LLM，但语气是旁观描述，不推荐）。
 
     Args:
         cand: 候选工作项
-        polish: 是否调 LLM 润色为正式工作日志语言
+        polish: 是否调 LLM 润色（默认 True）
 
     Returns:
         WorkItem 实例
@@ -162,7 +164,7 @@ def candidate_to_workitem(cand: CandidateItem, polish: bool = False) -> WorkItem
 
 
 def _polish_candidate(cand: CandidateItem) -> WorkItem:
-    """调 LLM 把候选润色为正式工作日志语言。"""
+    """调 LLM 把候选润色为第一人称工作日志条目。"""
     import json
     import os
     from dotenv import load_dotenv
@@ -176,11 +178,17 @@ def _polish_candidate(cand: CandidateItem) -> WorkItem:
     model = os.getenv("LLM_MODEL", "deepseek-chat")
 
     prompt = (
-        "你是工作日志撰写助手。把以下候选工作项润色为正式的工作日志条目。\n"
+        "你是工作日志撰写助手。把以下候选工作项润色为第一人称的工作日志条目。\n"
         "要求：\n"
-        "1. task: 简洁的任务名称（10-20字，动宾结构，如'配置FDM视频下载嗅探'）\n"
-        "2. detail: 工作过程与产出（50-150字，客观陈述，不含'用户'字样）\n"
-        "3. evidence: 原文证据，一字不差保留\n\n"
+        "1. task: 简洁的任务名称（10-20字，动宾结构，如'撰写开题报告国内研究综述'）\n"
+        "2. detail: 以第一人称'我'描述工作过程与产出（50-150字）\n"
+        "   - 写'我做了什么'，不要写'用户做了什么'\n"
+        "   - 包含：做了什么 + 怎么做的 + 关键结果\n"
+        "   - 语气简洁客观，像工作汇报而非对话记录\n"
+        "3. evidence: 从下方原始证据中筛选最能体现工作成果的片段（保持原文措辞，不编造）\n"
+        "   - 优先选 AI 回答中的关键结论/产出，而非用户的 prompt 指令\n"
+        "   - 如果原文全是 prompt 指令，提取其中最核心的一两句\n"
+        "   - 保留原文措辞，不改写\n\n"
         f"候选主题: {cand.topic}\n"
         f"候选摘要: {cand.summary}\n"
         f"候选证据: {cand.evidence}\n\n"
@@ -198,7 +206,7 @@ def _polish_candidate(cand: CandidateItem) -> WorkItem:
         return WorkItem(
             task=data["task"],
             detail=data["detail"],
-            evidence=cand.evidence,  # evidence 不让 LLM 改，保证一字不差
+            evidence=data.get("evidence", cand.evidence),
         )
     except Exception:
         # LLM 调用失败时降级为直接映射
@@ -211,7 +219,7 @@ def _polish_candidate(cand: CandidateItem) -> WorkItem:
 
 def generate_markdown(
     candidates: List[CandidateItem],
-    polish: bool = False,
+    polish: bool = True,
 ) -> str:
     """从候选工作项生成 Markdown 工作日志。
 
@@ -286,7 +294,7 @@ def generate_worklog(
     candidates: List[CandidateItem],
     select_indices: Optional[List[int]] = None,
     date_range: Optional[tuple[str, str]] = None,
-    polish: bool = False,
+    polish: bool = True,
     select_all: bool = False,
 ) -> str:
     """生成工作日志的统一入口。

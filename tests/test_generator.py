@@ -158,7 +158,7 @@ class TestInteractiveSelect:
 # ==========================================
 class TestCandidateToWorkitem:
     def test_direct_mapping(self, sample_candidates):
-        """默认不润色，直接映射字段。"""
+        """polish=False 时直接映射字段。"""
         item = candidate_to_workitem(sample_candidates[0], polish=False)
         assert isinstance(item, WorkItem)
         assert item.task == "开题报告撰写"
@@ -172,7 +172,7 @@ class TestCandidateToWorkitem:
 class TestGenerateMarkdown:
     def test_basic_structure(self, sample_candidates):
         """Markdown 应含 YAML frontmatter + 标题 + 按日期组织。"""
-        md = generate_markdown(sample_candidates[:1])
+        md = generate_markdown(sample_candidates[:1], polish=False)
         assert md.startswith("---")
         assert "date_range:" in md
         assert "generated_at:" in md
@@ -182,19 +182,19 @@ class TestGenerateMarkdown:
 
     def test_evidence_as_blockquote(self, sample_candidates):
         """证据应转为 Markdown 引用块。"""
-        md = generate_markdown(sample_candidates[:1])
+        md = generate_markdown(sample_candidates[:1], polish=False)
         assert "> 现在我已经有了..." in md
 
     def test_cross_day_appears_under_both_dates(self, sample_candidates):
         """跨天候选应在两个日期下都出现。"""
-        md = generate_markdown([sample_candidates[1]])  # FDM，跨 5-20/5-21
+        md = generate_markdown([sample_candidates[1]], polish=False)  # FDM，跨 5-20/5-21
         assert "## 2026-05-20" in md
         assert "## 2026-05-21" in md
         assert "### FDM下载工具配置" in md
 
     def test_yaml_frontmatter_date_range(self, sample_candidates):
         """YAML frontmatter 的 date_range 应覆盖所有日期。"""
-        md = generate_markdown(sample_candidates)
+        md = generate_markdown(sample_candidates, polish=False)
         # 3 个候选含 3 个不同日期：2026-02-24, 2026-03-26, 2026-05-20~21
         assert "2026-02-24" in md
         assert "2026-05-21" in md
@@ -206,7 +206,7 @@ class TestGenerateMarkdown:
 # ==========================================
 class TestGenerateWorklog:
     def test_select_indices(self, sample_candidates):
-        md = generate_worklog(sample_candidates, select_indices=[2])
+        md = generate_worklog(sample_candidates, select_indices=[2], polish=False)
         assert "### FDM下载工具配置" in md
         assert "### 开题报告撰写" not in md
 
@@ -214,12 +214,13 @@ class TestGenerateWorklog:
         md = generate_worklog(
             sample_candidates,
             date_range=("2026-03-26", "2026-03-26"),
+            polish=False,
         )
         assert "### 开题报告撰写" in md
         assert "### FDM下载工具配置" not in md
 
     def test_select_all(self, sample_candidates):
-        md = generate_worklog(sample_candidates, select_all=True)
+        md = generate_worklog(sample_candidates, select_all=True, polish=False)
         assert "### 开题报告撰写" in md
         assert "### FDM下载工具配置" in md
         assert "### 研究生生活费预算" in md
