@@ -176,6 +176,10 @@ def cluster(
         False, "--dry-run",
         help="只做 parse + bridge 按天归集，不调 LLM 聚类（快速预览数据分布）",
     ),
+    legacy_reduce: bool = typer.Option(
+        False, "--legacy-reduce",
+        help="使用旧版 LLM Map-Reduce 聚类（默认用 Embedding 聚类）",
+    ),
 ):
     """端到端：解析多平台导出 → 按天归集 → LLM 聚类 → 输出候选工作项。
 
@@ -240,13 +244,17 @@ def cluster(
         console.print(f"      {unified_file}")
         return
 
-    # ---- 3. LLM 聚类（Map-Reduce）----
-    from src.clustering import MapReduceClustering
+    # ---- 3. 聚类（默认 Embedding，可选 Map-Reduce）----
+    from src.clustering import EmbeddingClustering, MapReduceClustering
 
-    console.print(f"\n[cyan]开始 LLM 聚类[/cyan]（Map: {len(daily)} 天 → Reduce: 跨天合并）...")
-    console.print("[dim]每天独立调 LLM 提取候选，可能需要等待...[/dim]")
+    if legacy_reduce:
+        console.print(f"\n[cyan]开始 LLM 聚类（Map-Reduce 模式）[/cyan]...")
+        clusterer = MapReduceClustering()
+    else:
+        console.print(f"\n[cyan]开始聚类（Embedding 模式，带 Map 缓存）[/cyan]...")
+        cache_dir = outdir / ".map_cache"
+        clusterer = EmbeddingClustering(cache_dir=cache_dir)
 
-    clusterer = MapReduceClustering()
     candidates = clusterer.cluster(daily)
 
     # ---- 4. 输出候选工作项 ----
@@ -401,6 +409,97 @@ def adapters():
         table.add_row(cls.provider, cls.__name__, "✅ 已注册")
 
     console.print(table)
+
+
+# ==========================================
+# tree — 构建层级主题树（RAPTOR 递归聚类）
+# ==========================================
+@app.command()
+def tree(
+    input_paths: list[Path] = typer.Argument(
+        ...,
+        help="多个导出文件路径（支持混合平台）",
+    ),
+    outdir: Path = typer.Option(Path("./output"), "--outdir", "-o", help="输出目录"),
+    timezone: str = typer.Option("Asia/Shanghai", "--tz", help="时区归一化目标"),
+    threshold: Optional[float] = typer.Option(
+        None, "--threshold", "-t",
+        help="聚类距离阈值（越小越严格，默认 0.45）",
+    ),
+):
+    """构建 RAPTOR 风格层级主题树，输出 topic_tree.json。
+
+    流程：parse → bridge → Map（带缓存）→ 递归 Embedding 聚类 → TopicTree
+
+    示例:
+      aiworklog tree examples/conversations.json examples/ai_history.html -o ./output
+      aiworklog tree examples/conversations.json --threshold 0.3  # 更严格的聚类
+    """
+    from src.clustering import EmbeddingClustering
+    from src.raptor import build_topic_tree, print_tree
+    from src.models import CandidateItem
+
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # ---- 1. 解析 ----
+    from src.unified_schema import UnifiedSession
+
+    all_sessions: list[UnifiedSession] = []
+    for path in input_paths:
+        if not path.exists():
+            console.print(f"[red]错误：文件不存在 {path}[/red]")
+            raise typer.Exit(1)
+        console.print(f"[cyan]解析中[/cyan] {path.name} ...")
+        sessions = pipeline.run(path, provider="auto", timezone_str=timezone)
+        console.print(f"  → {len(sessions)} 个会话")
+        all_sessions.extend(sessions)
+
+    if not all_sessions:
+        console.print("[red]错误：未解析出任何会话[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"\n[cyan]合并后[/cyan] 共 {len(all_sessions)} 个会话")
+
+    # ---- 2. 按天归集 ----
+    from src.bridge import unified_to_daily
+
+    daily = unified_to_daily(all_sessions)
+    console.print(f"[cyan]按天归集[/cyan] 共 {len(daily)} 天")
+
+    # ---- 3. Map（带缓存）获取候选 ----
+    console.print(f"\n[cyan]Map 提取候选（带缓存）[/cyan]...")
+    cache_dir = outdir / ".map_cache"
+    clusterer = EmbeddingClustering(cache_dir=cache_dir)
+    candidates = clusterer.cluster(daily)
+
+    if not candidates:
+        console.print("[yellow]未提取到任何候选，无法构建树[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"[cyan]候选数[/cyan]: {len(candidates)} 个")
+
+    # ---- 4. 递归聚类构建 TopicTree ----
+    console.print(f"\n[cyan]构建层级主题树[/cyan]（RAPTOR 递归聚类）...")
+    topic_tree = build_topic_tree(
+        candidates,
+        distance_threshold=threshold,
+        log=lambda msg: console.print(f"  [dim]{msg}[/dim]"),
+    )
+
+    # ---- 5. 输出 ----
+    tree_file = outdir / "topic_tree.json"
+    tree_file.write_text(topic_tree.to_json(), encoding="utf-8")
+
+    console.print(f"\n[green]✅ 主题树构建完成[/green]")
+    console.print(f"   节点数: {topic_tree.meta.total_nodes}")
+    console.print(f"   深度:   {topic_tree.meta.depth}")
+    console.print(f"   根节点: {len(topic_tree.root_ids)} 个")
+
+    # 终端可视化
+    console.print()
+    print_tree(topic_tree, console)
+
+    console.print(f"\n输出文件: [cyan]{tree_file}[/cyan]")
 
 
 if __name__ == "__main__":

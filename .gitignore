@@ -53,3 +53,6 @@ htmlcov/
 
 # 真实对话导出样本（含个人/敏感内容，不入库；测试时本地提供）
 examples/conversations.json
+
+# Trae IDE 本地配置（同 .vscode，不入库）
+.trae/

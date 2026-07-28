@@ -43,6 +43,7 @@ def unified_to_daily(sessions: List[UnifiedSession]) -> List[DailyConversation]:
                     role=msg.role,
                     content=msg.content,
                     date=date_str,
+                    session_id=sess.id,
                 )
             )
 

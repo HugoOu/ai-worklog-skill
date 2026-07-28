@@ -14,17 +14,22 @@ client = OpenAI(
     base_url=os.getenv("OPENAI_BASE_URL")
 )
 MODEL_NAME = os.getenv("LLM_MODEL", "deepseek-chat")
+MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "8192"))
 
-# 系统提示词：改为要求 LLM 进行主题聚类
+# 每条消息送入 LLM 的最大字符数（超长截断，减少 token 消耗 & 防止输出截断）
+MSG_CHAR_LIMIT = 1500
+
+# 系统提示词：要求 LLM 进行主题聚类
 SYSTEM_PROMPT = """你是一个专业的对话内容分析助手。你的任务是从用户提供的单日 AI 对话记录中，识别并聚类出不同的【主题或事件块】。
 
 请遵循以下原则：
 1. 将讨论相同问题、相同技术或相同任务的对话归为同一个主题块。
-2. 忽略无意义的寒暄，但不要主观判断某个话题是否属于“工作”，只要是有实质内容的讨论，就提取出来作为候选。
-3. 每个候选块必须包含：
+2. 忽略无意义的寒暄，但不要主观判断某个话题是否属于"工作"，只要是有实质内容的讨论，就提取出来作为候选。
+3. 每天最多提取 5 个候选主题（合并相近主题，不要过度拆分）。
+4. 每个候选块必须包含以下三个字段，缺一不可：
    - topic: 核心主题或任务名称 (10-20字)
    - summary: 对该主题讨论过程和结论的简要总结 (50-100字)
-   - evidence: 对话中支持该主题的原始文本片段，必须一字不差。
+   - evidence: 对话中最能代表该主题的一句话或关键片段（≤200字，直接复制原文）。
 
 你必须输出合法的 JSON 格式，结构如下：
 {
@@ -32,25 +37,103 @@ SYSTEM_PROMPT = """你是一个专业的对话内容分析助手。你的任务�
     {
       "topic": "主题名称",
       "summary": "主题总结",
-      "evidence": "对话中的原话片段"
+      "evidence": "≤200字的原文证据片段"
     }
   ]
 }
 """
 
 def format_conversation_for_llm(daily_conv: DailyConversation) -> str:
-    """将 DailyConversation 对象格式化为 LLM 易读的纯文本"""
+    """将 DailyConversation 对象格式化为 LLM 易读的纯文本（每条消息截断至 MSG_CHAR_LIMIT）"""
     text = f"日期: {daily_conv.date}\n对话记录:\n"
     for msg in daily_conv.messages:
         sender = "用户" if msg.role == "user" else "AI助手"
-        text += f"{sender}: {msg.content}\n"
+        content = msg.content
+        if len(content) > MSG_CHAR_LIMIT:
+            content = content[:MSG_CHAR_LIMIT] + "...（内容过长，已截断）"
+        text += f"{sender}: {content}\n"
     return text
 
-def extract_candidates_from_daily(daily_conv: DailyConversation) -> List[CandidateItem]:
+
+def _repair_truncated_json(raw: str) -> str:
+    """
+    尝试修复因 max_tokens 截断而不完整的 JSON。
+    策略：用状态机跟踪字符串/转义/花括号深度，提取所有完整闭合的候选对象，
+    重建合法的 {"candidates": [...]} JSON。
+    """
+    # 先尝试直接解析
+    try:
+        json.loads(raw)
+        return raw
+    except json.JSONDecodeError:
+        pass
+
+    # 状态机扫描：找到所有顶层数组元素的完整 {} 对象
+    # 跟踪是否在字符串内、是否转义、花括号深度
+    objects = []
+    i = 0
+    n = len(raw)
+    in_string = False
+    escape_next = False
+    depth = 0
+    obj_start = -1
+
+    while i < n:
+        ch = raw[i]
+        if escape_next:
+            escape_next = False
+            i += 1
+            continue
+        if ch == '\\' and in_string:
+            escape_next = True
+            i += 1
+            continue
+        if ch == '"' and not escape_next:
+            in_string = not in_string
+            i += 1
+            continue
+        if in_string:
+            i += 1
+            continue
+        # 不在字符串内
+        if ch == '{':
+            if depth == 1:
+                obj_start = i  # 候选对象开始
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 1 and obj_start >= 0:
+                # 一个完整的候选对象
+                obj_str = raw[obj_start:i+1]
+                try:
+                    obj = json.loads(obj_str)
+                    objects.append(obj)
+                except json.JSONDecodeError:
+                    pass
+                obj_start = -1
+            elif depth == 0:
+                break  # 外层对象闭合
+        i += 1
+
+    if objects:
+        repaired = json.dumps({"candidates": objects}, ensure_ascii=False)
+        return repaired
+
+    return raw  # 无法修复，返回原文让调用方报错
+
+def extract_candidates_from_daily(daily_conv: DailyConversation, log=print) -> List[CandidateItem]:
     """
     调用 LLM 从单日对话中进行主题聚类，生成候选工作项。
+    log: 日志输出函数，默认 print；在 rich 进度条上下文中可传 progress.console.print 避免打断渲染。
+
+    证据链：捕获当天消息涉及的 session_id 列表，随每个候选一起返回（日级粗粒度归因）。
     """
     user_prompt = format_conversation_for_llm(daily_conv)
+    # 当天涉及的 session_ids（去重，保序）
+    day_session_ids: List[str] = []
+    for msg in daily_conv.messages:
+        if msg.session_id and msg.session_id not in day_session_ids:
+            day_session_ids.append(msg.session_id)
     
     try:
         response = client.chat.completions.create(
@@ -60,13 +143,24 @@ def extract_candidates_from_daily(daily_conv: DailyConversation) -> List[Candida
                 {"role": "user", "content": user_prompt}
             ],
             response_format={"type": "json_object"},
-            temperature=0.2
+            temperature=0,
+            max_tokens=MAX_TOKENS
         )
         
+        if not response.choices:
+            log(f"[日期: {daily_conv.date}] LLM 返回空 choices（可能触发内容审核），跳过")
+            return []
         content = response.choices[0].message.content
         if not content:
-            print(f"[日期: {daily_conv.date}] LLM 返回空内容，跳过")
+            log(f"[日期: {daily_conv.date}] LLM 返回空内容，跳过")
             return []
+
+        # 检查是否因 max_tokens 截断（finish_reason == "length"）
+        finish_reason = response.choices[0].finish_reason
+        if finish_reason == "length":
+            log(f"  ⚠️ [日期: {daily_conv.date}] LLM 输出被截断，尝试修复 JSON...")
+            content = _repair_truncated_json(content)
+
         data_dict = json.loads(content)
         candidates_data = data_dict.get("candidates", [])
         candidates = []
@@ -74,17 +168,20 @@ def extract_candidates_from_daily(daily_conv: DailyConversation) -> List[Candida
         # 增加条目级容错：即使某一条数据格式不对，也只跳过这一条，不影响全局
         for item in candidates_data:
             try:
-                candidates.append(CandidateItem(**item))
+                cand = CandidateItem(**item)
+                # 证据链：日级粗粒度归因——当天所有候选共享当天涉及的 session 列表
+                cand.session_ids = list(day_session_ids)
+                candidates.append(cand)
             except Exception as e:
-                print(f"  ⚠️ 跳过一个格式错误的候选主题: {item.get('topic', '未知主题')}, 错误: {e}")
+                log(f"  ⚠️ 跳过一个格式错误的候选主题: {item.get('topic', '未知主题')}, 错误: {e}")
         
         return candidates
         
     except json.JSONDecodeError as e:
-        print(f"[日期: {daily_conv.date}] JSON 解析失败: {e}")
+        log(f"[日期: {daily_conv.date}] JSON 解析失败: {e}")
         return []
     except Exception as e:
-        print(f"[日期: {daily_conv.date}] LLM 调用或校验出错: {e}")
+        log(f"[日期: {daily_conv.date}] LLM 调用或校验出错: {e}")
         return []
 
 
@@ -136,9 +233,12 @@ def merge_cross_day_candidates(candidates: List[CandidateItem]) -> List[Candidat
                 {"role": "user", "content": user_prompt}
             ],
             response_format={"type": "json_object"},
-            temperature=0.2
+            temperature=0
         )
 
+        if not response.choices:
+            print("跨天合并: LLM 返回空 choices，降级返回未合并候选")
+            return candidates
         content = response.choices[0].message.content
         if not content:
             print("跨天合并: LLM 返回空内容，降级返回未合并候选")
