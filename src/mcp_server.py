@@ -175,10 +175,11 @@ def _build_server() -> "FastMCP":
                 }
                 return json.dumps(result, ensure_ascii=False, indent=2)
 
-            # 3. LLM 聚类
-            from src.clustering import MapReduceClustering
+            # 3. 聚类（默认 Embedding，带 Map 缓存，确定性；与 CLI cluster 一致）
+            from src.clustering import EmbeddingClustering
 
-            clusterer = MapReduceClustering()
+            cache_dir = outdir_path / ".map_cache"
+            clusterer = EmbeddingClustering(cache_dir=cache_dir)
             candidates = clusterer.cluster(daily)
 
             # 输出 candidates.json

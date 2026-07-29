@@ -20,8 +20,8 @@ from src.cache import MapCacheStore
 
 # Map 阶段并发数（可通过环境变量覆盖，默认 5）
 MAP_WORKERS = int(os.getenv("MAP_WORKERS", "5"))
-# Map prompt 版本（改 SYSTEM_PROMPT 时递增，触发缓存失效）
-PROMPT_VERSION = "v2"
+# Map prompt 版本（改 SYSTEM_PROMPT 或 Map 缓存数据结构时递增，触发缓存失效）
+PROMPT_VERSION = "v3"
 
 
 class ClusteringStrategy(ABC):
@@ -127,6 +127,7 @@ class EmbeddingClustering(ClusteringStrategy):
                     CandidateTopic(
                         topic=c.topic,
                         summary=c.summary,
+                        evidence=c.evidence,
                         date=daily_conv.date,
                         session_ids=c.session_ids,
                     )
@@ -165,7 +166,7 @@ class EmbeddingClustering(ClusteringStrategy):
                         all_candidates.append(CandidateItem(
                             topic=ct.topic,
                             summary=ct.summary,
-                            evidence="",
+                            evidence=ct.evidence,
                             dates=[daily_conv.date],
                             session_ids=ct.session_ids,
                         ))

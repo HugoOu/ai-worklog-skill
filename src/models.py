@@ -87,6 +87,7 @@ class CandidateTopic(BaseModel):
     candidate_id: str = Field(description="候选主题稳定 ID（sha256[:12] of date+topic）")
     topic: str = Field(description="核心主题名称（10-20 字）")
     summary: str = Field(description="讨论过程与结论的简要总结（50-100 字）")
+    evidence: str = Field(default="", description="对话中支持该主题的原始文本片段（一字不差，Map 阶段从 LLM 输出捕获）")
     source_refs: List[MessageRef] = Field(default_factory=list, description="证据引用列表")
     session_ids: List[str] = Field(default_factory=list, description="该候选涉及的来源 UnifiedSession.id 列表（证据链回调用）")
     confidence: Optional[float] = Field(default=None, ge=0, le=1, description="LLM 自评置信度 0-1")
