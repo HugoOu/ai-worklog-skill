@@ -1,109 +1,179 @@
 ---
 name: ai-worklog
 description: |
-  Parse multi-platform LLM conversation exports (ChatGPT, Gemini) into unified format and cluster them into structured work logs. This skill should be used when the user provides LLM platform export files (JSON/HTML/ZIP) and wants to convert them to a unified format, or when the user wants to generate work logs from their AI conversation history. Triggers include "解析对话", "导入对话记录", "生成工作日志", "ChatGPT 导出", "Gemini 导出", "parse conversations", "generate worklog".
-agent_created: true
+  Parse multi-platform LLM conversation exports (ChatGPT, Gemini) into a unified
+  format, cluster them into a hierarchical topic tree, and generate Markdown work
+  logs. Use this skill when the user provides LLM platform export files
+  (JSON/HTML/ZIP) and wants to convert them to a unified format, cluster
+  conversation history into themes, or generate structured work logs. Triggers
+  include "解析对话", "导入对话记录", "生成工作日志", "聚类对话主题", "ChatGPT 导出",
+  "Gemini 导出", "parse conversations", "cluster conversations", "generate worklog".
 ---
 
 # AI Worklog
 
-## 何时触发
+A platform-agnostic Agent Skill. Works with any coding agent that supports the
+`SKILL.md` convention (Claude Code, Codex, Cursor, OpenClaw, WorkBuddy, etc.).
+The agent shell-executes the CLI below; nothing in this skill is tied to a
+specific agent platform.
 
-- 用户提供 LLM 平台导出文件（JSON / HTML / ZIP），需要转为统一格式
-- 用户想从 AI 对话历史生成结构化工作日志
-- 用户想跨平台合并对话记录（如 ChatGPT + Gemini）
-- 用户问"这些对话都讨论了什么主题"
+## When to use
 
-## 前置条件
+- The user provides an LLM platform export file (JSON / HTML / ZIP) and wants it converted to a unified format
+- The user wants to generate a structured work log from their AI conversation history
+- The user wants to merge conversation records across platforms (e.g. ChatGPT + Gemini)
+- The user asks "what themes/topics are in these conversations"
 
-- **项目根目录**：`C:\Users\Exception2Rule\ai-worklog-skill`
-- **Python 解释器**：`.venv/Scripts/python.exe`（项目内 venv）
-- **LLM 配置**：`.env` 文件含 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `LLM_MODEL`（cluster 命令需要，parse 不需要）
+## Prerequisites
 
-## CLI 命令参考
+- **Project root**: the directory containing this `SKILL.md` (e.g. `C:\Users\Exception2Rule\ai-worklog-skill`)
+- **Python interpreter**: prefer the project venv. On Windows: `.venv/Scripts/python.exe`; on macOS/Linux: `.venv/bin/python`. Fall back to system `python3` if no venv exists (run `python3 -m pip install -e .` first).
+- **LLM config**: a `.env` file in the project root with `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `LLM_MODEL`. Required by `cluster` / `generate` / `tree`; **not** required by `parse` / `parse-batch` / `adapters`.
 
-所有命令在项目根目录执行。CLI 入口：`python -m src.cli`。
-
-### 1. parse — 解析单个导出文件为统一格式
-
-```bash
-.venv/Scripts/python.exe -m src.cli parse <input_path> [options]
-```
-
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `--provider, -p` | `auto` | 平台标识：`auto`(自动探测) / `openai` / `google` |
-| `--format, -f` | `json` | 输出格式：`json` / `jsonl` |
-| `--outdir, -o` | `./output` | 输出目录 |
-| `--tz` | `Asia/Shanghai` | 时区归一化目标 |
-| `--group-by-date` | `false` | 额外输出 `daily_conversations.json`（按天归集） |
-
-**示例**：
-```bash
-# 自动探测格式
-.venv/Scripts/python.exe -m src.cli parse examples/conversations.json -o ./output
-
-# 显式指定 Gemini
-.venv/Scripts/python.exe -m src.cli parse examples/gemini_1000.html -p google -o ./output
-```
-
-**输出**：`<outdir>/unified_sessions.json`（UnifiedSession 数组）
-
-### 2. cluster — 端到端聚类（解析 → 按天归集 → LLM 聚类）
+Throughout this document `$PY` denotes the interpreter. Set it once:
 
 ```bash
-.venv/Scripts/python.exe -m src.cli cluster <input1> <input2> ... [options]
+# Windows (Git Bash)
+PY=.venv/Scripts/python.exe
+# macOS / Linux
+PY=.venv/bin/python
 ```
 
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `--outdir, -o` | `./output` | 输出目录 |
-| `--tz` | `Asia/Shanghai` | 时区归一化目标 |
-| `--dry-run` | `false` | 只做 parse + 按天归集，不调 LLM（快速预览数据分布） |
+All commands run from the project root. CLI entry: `$PY -m src.cli <cmd>`
+(equivalent to `aiworklog <cmd>` after `pip install -e .`).
 
-**示例**：
-```bash
-# 完整聚类（调 LLM，有延迟和费用）
-.venv/Scripts/python.exe -m src.cli cluster examples/conversations.json examples/gemini_1000.html -o ./output
+## CLI command reference
 
-# 快速预览（不调 LLM，秒出按天归集结果）
-.venv/Scripts/python.exe -m src.cli cluster examples/conversations.json --dry-run
-```
-
-**输出**（3 个文件）：
-- `unified_sessions.json` — 统一格式解析结果（所有平台合并）
-- `daily_conversations.json` — 按天归集（跨平台同一天的消息合并）
-- `candidates.json` — 聚类候选工作项（每个含 topic / summary / evidence / dates）
-
-### 3. adapters — 列出已注册 adapter
+### 1. parse — parse a single export file into the unified format
 
 ```bash
-.venv/Scripts/python.exe -m src.cli adapters
+$PY -m src.cli parse <input_path> [options]
 ```
 
-### 4. parse-batch — 批量扫描目录
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--provider, -p` | `auto` | Platform: `auto` (detect) / `openai` / `google` |
+| `--format, -f` | `json` | Output format: `json` / `jsonl` |
+| `--outdir, -o` | `./output` | Output directory |
+| `--tz` | `Asia/Shanghai` | Timezone normalization target |
+| `--group-by-date` | `false` | Also emit `daily_conversations.json` |
+
+Examples:
 
 ```bash
-.venv/Scripts/python.exe -m src.cli parse-batch <input_dir> [--pattern "**/*.{json,jsonl,html,zip}"] [-o ./output]
+$PY -m src.cli parse examples/conversations.json -o ./output          # auto-detect
+$PY -m src.cli parse examples/gemini_1000.html -p google -o ./output  # explicit Gemini
 ```
 
-## 输出格式契约
+Output: `<outdir>/unified_sessions.json` (array of UnifiedSession).
+
+### 2. parse-batch — batch-scan a directory
+
+```bash
+$PY -m src.cli parse-batch <input_dir> [-o ./output] [--tz Asia/Shanghai]
+```
+
+Recursively scans `*.json/*.jsonl/*.html/*.htm/*.zip`, parses each, and merges.
+
+### 3. cluster — end-to-end clustering (parse → daily grouping → Map → cluster)
+
+```bash
+$PY -m src.cli cluster <input1> <input2> ... [options]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--outdir, -o` | `./output` | Output directory |
+| `--tz` | `Asia/Shanghai` | Timezone normalization target |
+| `--dry-run` | `false` | Parse + daily grouping only, no LLM (fast preview) |
+| `--legacy-reduce` | `false` | Use legacy LLM Map-Reduce instead of embedding clustering |
+
+Examples:
+
+```bash
+# Preview data distribution (no LLM, instant, free)
+$PY -m src.cli cluster examples/conversations.json --dry-run
+
+# Full clustering (default: embedding mode with Map cache; deterministic)
+$PY -m src.cli cluster examples/conversations.json examples/gemini_1000.html -o ./output
+```
+
+Output (3 files):
+- `unified_sessions.json` — unified parse result (all platforms merged)
+- `daily_conversations.json` — grouped by day (cross-platform same-day messages merged)
+- `candidates.json` — clustered candidate work items (each has topic / summary / evidence / dates / session_ids)
+
+Map results are cached per day under `<outdir>/.map_cache/`; a rerun on the same
+input hits the cache (0 LLM calls, sub-second).
+
+### 4. tree — build the RAPTOR hierarchical topic tree
+
+```bash
+$PY -m src.cli tree <input1> <input2> ... [-o ./output] [--tz Asia/Shanghai] [-t/--threshold 0.45]
+```
+
+Flow: parse → daily grouping → Map (cached) → recursive embedding clustering → TopicTree.
+
+```bash
+$PY -m src.cli tree examples/conversations.json -o ./output
+$PY -m src.cli tree examples/conversations.json -t 0.3 -o ./output   # stricter clustering
+```
+
+Output: `<outdir>/topic_tree.json` + a rich tree printout in the terminal. Leaf
+nodes carry `session_ids` that link back to the original conversations.
+
+> The topic tree is the **core intermediate artifact** for log generation — not a
+> separate deliverable. Intended workflow: build the tree → user selects nodes at
+> the desired granularity (task / theme / project) → render Markdown log.
+> Note: `generate` currently consumes the flat `candidates.json`; tree-node-driven
+> log generation is the next step and not yet wired up.
+
+### 5. generate — produce a Markdown work log
+
+```bash
+$PY -m src.cli generate <candidates.json> [--select 2,3,9-11] [--date-range A:B] [--interactive] [--all] [--polish/--no-polish] [-o ./output]
+```
+
+Selection modes are mutually exclusive (priority: select > date-range > interactive > all).
+
+```bash
+$PY -m src.cli generate output/candidates.json --all -o ./output            # select all, polish to first person
+$PY -m src.cli generate output/candidates.json --select 2,3,9-11            # by index
+$PY -m src.cli generate output/candidates.json --date-range 2026-03-26:2026-06-09
+$PY -m src.cli generate output/candidates.json --all --no-polish            # skip LLM polish
+```
+
+Output: `<outdir>/worklog.md` (YAML frontmatter + date-organized work items).
+
+### 6. adapters — list registered platform adapters
+
+```bash
+$PY -m src.cli adapters
+```
+
+### 7. query — query stored conversations (placeholder, Phase 2, not implemented)
+
+```bash
+$PY -m src.cli query [--db worklog.db] [--date] [--provider] [--keyword]
+```
+
+## Output format contract
 
 ### unified_sessions.json
 
 ```json
 [
   {
-    "id": "会话唯一 ID",
-    "title": "会话标题",
+    "id": "session unique ID",
+    "title": "session title",
     "provider": "openai | google",
     "model": "gpt-5-2 | null",
     "messages": [
       {
-        "id": "消息 ID",
-        "session_id": "所属会话 ID",
+        "id": "message ID",
+        "session_id": "owning session ID",
         "role": "user | assistant | system | tool",
-        "content": "纯文本内容",
+        "content": "plain text content",
         "provider": "openai | google",
         "model": "gpt-5-2 | null",
         "created_at": "2026-02-24T00:07:56.508145+08:00",
@@ -116,69 +186,91 @@ agent_created: true
 ]
 ```
 
-关键字段：
-- `provider` + `model` 分离存储（借鉴 LobeChat）
-- `created_at` 已归一化到 `Asia/Shanghai`（UTC+8）
-- `content` 是纯文本（ChatGPT 内联实体标记已清理）
+Key fields:
+- `provider` + `model` stored separately
+- `created_at` normalized to `Asia/Shanghai` (UTC+8)
+- `content` is plain text (ChatGPT inline entity markers already cleaned)
 
 ### candidates.json
 
 ```json
 [
   {
-    "topic": "主题名称（10-20字）",
-    "summary": "主题讨论过程和结论的简要总结（50-150字）",
-    "evidence": "对话中支持该主题的原始文本片段，一字不差",
-    "dates": ["2026-05-20", "2026-05-21"]
+    "topic": "theme name (10-20 chars)",
+    "summary": "brief summary of the discussion and conclusion (50-150 chars)",
+    "evidence": "verbatim source snippet supporting the theme",
+    "dates": ["2026-05-20", "2026-05-21"],
+    "session_ids": ["origin UnifiedSession.id"]
   }
 ]
 ```
 
-`dates` 含多个日期表示跨天合并的主题。
+Multiple `dates` indicate a cross-day merged theme; `session_ids` form the evidence chain back to source conversations.
 
-## Agent 决策规则
+### topic_tree.json
 
-1. **用户给单个文件路径** → 调 `parse`
-2. **用户给多个文件 + 想生成工作日志** → 调 `cluster`
-3. **用户未指定 provider** → 用 `auto`（pipeline 自动探测格式）
-4. **用户想快速看数据分布** → 调 `cluster --dry-run`（不调 LLM，秒出）
-5. **用户想看支持哪些平台** → 调 `adapters`
-6. **输出文件路径必须返回给用户确认**，不要静默处理
-7. **cluster 不带 --dry-run 时会调 LLM**（有费用），先用 `--dry-run` 预览，确认数据无误后再跑完整聚类
+```json
+{
+  "meta": { "total_nodes": 12, "depth": 3, "total_sessions": 9, "cluster_params": {"distance_threshold": 0.45} },
+  "nodes": {
+    "<node_id>": {
+      "node_id": "...", "depth": 0, "label": "...", "summary": "...",
+      "children": [], "session_ids": ["..."], "dates": ["..."], "parent_id": null
+    }
+  },
+  "root_ids": ["<top-level node_id>"]
+}
+```
 
-## 支持的平台
+`depth=0` nodes are leaves (carry `session_ids`); higher depths are cluster-produced parents (`children` links to child node_ids).
 
-| 平台 | provider | 输入格式 | 状态 |
-|------|----------|----------|------|
-| OpenAI ChatGPT | `openai` | `conversations.json`（裸 JSON 或 ZIP） | ✅ 已实现 |
-| Google Gemini | `google` | My Activity HTML | ✅ 已实现 |
-| Anthropic Claude | `anthropic` | JSON | ⏸️ 预留 |
-| xAI Grok | `xai` | JSON | ⏸️ 预留 |
-| DeepSeek | `deepseek` | JSON | ⏸️ 预留 |
-| Qwen / 通义千问 | `qwen` | JSON | ⏸️ 预留 |
-| GLM / 智谱 | `glm` | JSON | ⏸️ 预留 |
-| Kimi / Moonshot | `kimi` | JSON | ⏸️ 预留 |
-| MiniMax | `minimax` | JSON | ⏸️ 预留 |
+## Agent decision rules
 
-预留平台只需在 `src/adapters/` 下新增 adapter 文件并注册到 `REGISTRY` 即可接入，接口已固化。
+1. **User gives a single file path** → call `parse`
+2. **User gives multiple files and wants a work log** → call `cluster` (or `tree` for hierarchical structure)
+3. **User does not specify a provider** → use `auto` (pipeline auto-detects the format)
+4. **User wants a quick look at data distribution** → call `cluster --dry-run` (no LLM, instant)
+5. **User wants to know which platforms are supported** → call `adapters`
+6. **Always return output file paths to the user for confirmation** — do not handle silently
+7. **`cluster`/`tree`/`generate` (without `--dry-run`/`--no-polish`) call an LLM** (costs money). Preview with `--dry-run` first, then run the full pipeline once the data looks right.
 
-## 典型工作流
+## Supported platforms
+
+| Platform | provider | Input format | Status |
+|----------|----------|--------------|--------|
+| OpenAI ChatGPT | `openai` | `conversations.json` (bare JSON or ZIP) | ✅ implemented |
+| Google Gemini | `google` | My Activity HTML | ✅ implemented |
+| Anthropic Claude | `anthropic` | JSON | ⏸️ reserved |
+| xAI Grok | `xai` | JSON | ⏸️ reserved |
+| DeepSeek | `deepseek` | JSON | ⏸️ reserved |
+| Qwen | `qwen` | JSON | ⏸️ reserved |
+| GLM / Zhipu | `glm` | JSON | ⏸️ reserved |
+| Kimi / Moonshot | `kimi` | JSON | ⏸️ reserved |
+| MiniMax | `minimax` | JSON | ⏸️ reserved |
+
+Reserved platforms only need a new adapter file under `src/adapters/` registered in `REGISTRY`; the interface is frozen.
+
+## Typical workflow
 
 ```
-用户："帮我解析这个 ChatGPT 导出"
-  ↓
-Agent: aiworklog parse conversations.json -o ./output
-  ↓
-返回: unified_sessions.json 路径 + 会话数摘要
+User: "parse this ChatGPT export"
+  → Agent: $PY -m src.cli parse conversations.json -o ./output
+  → returns: unified_sessions.json path + session count
 
-用户："把 ChatGPT 和 Gemini 的对话合并生成工作日志"
-  ↓
-Agent: aiworklog cluster conversations.json gemini_1000.html -o ./output --dry-run
-  ↓ (先 dry-run 预览)
-返回: 按天归集摘要，确认数据分布
-  ↓
-用户确认后:
-Agent: aiworklog cluster conversations.json gemini_1000.html -o ./output
-  ↓ (调 LLM 聚类)
-返回: candidates.json 路径 + 候选工作项列表
+User: "merge ChatGPT + Gemini and generate a work log"
+  → Agent: $PY -m src.cli cluster conversations.json gemini_1000.html -o ./output --dry-run   # preview first
+  → returns: daily-grouping summary; confirm data distribution
+  → after user confirms:
+  → Agent: $PY -m src.cli cluster conversations.json gemini_1000.html -o ./output             # full clustering
+  → returns: candidates.json path + candidate list
+  → Agent: $PY -m src.cli generate output/candidates.json --all -o ./output
+  → returns: worklog.md path
 ```
+
+## MCP server (optional)
+
+The same capabilities are also exposed as an MCP server (`src/mcp_server.py`) with
+4 tools: `parse_conversations` / `cluster_conversations` / `list_adapters` /
+`generate_worklog`. Install with `pip install -e .[mcp]` and run
+`$PY -m src.mcp_server`. This is a generic MCP server usable by any MCP client,
+not tied to a specific agent platform.

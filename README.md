@@ -1,10 +1,10 @@
 # AI Worklog Skill
 
-把多平台 AI 对话导出（ChatGPT / Gemini）自动解析为统一格式，再聚类成结构化工作日志与层级主题树。
+把多平台 AI 对话导出（ChatGPT / Gemini）自动解析为统一格式，聚类成层级主题树，再由用户在树中选取需要的部分，生成符合指定需求或模板格式的 Markdown 工作日志。
 
 - **确定性聚类**：LLM 只做 Map（带磁盘缓存），跨天合并交给 Embedding + 层次聚类，两次运行结果完全一致
 - **证据可追溯**：session_id 全程贯通，从原始对话 → 候选 → 主题树叶子
-- **两条产出线**：`candidates.json` → Markdown 工作日志；`topic_tree.json` → RAPTOR 层级主题树
+- **以树为纲生成日志**：RAPTOR 层级主题树（`topic_tree.json`）是核心中间产物，工作日志生成服务于它——用户在树中按粒度（任务/主题/项目）选取节点，再渲染成 Markdown
 
 ## 项目结构
 
@@ -259,6 +259,9 @@ $PY -m src.cli tree examples/conversations.json -t 0.3 -o ./output
 ```
 
 输出：`<outdir>/topic_tree.json` + 终端 rich 树状图打印。叶子节点 `session_ids` 可回链到原始对话。
+
+> **定位**：主题树是生成工作日志的**核心中间产物**，不是独立产出线。目标工作流是：先建树 → 用户在树中按粒度（任务/主题/项目）选取需要的节点 → 按指定需求或模板渲染 Markdown 日志。
+> **当前状态**：`generate` 命令暂直接消费 `candidates.json`（扁平候选）；"从树节点选取 → 生成日志"的衔接是下一步方向（见 handoff.md §8），尚未接入。
 
 #### `query` — 查询落库对话（占位，Phase 2 未实现）
 
