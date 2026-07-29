@@ -129,3 +129,40 @@ def test_session_ids_propagate_to_tree(mock_embed):
     for rid in tree.root_ids:
         all_sessions.update(tree.get_sessions_under(rid))
     assert all_sessions == {"sess-A", "sess-B", "sess-C"}
+
+
+@patch("src.raptor.embed_texts", side_effect=_fake_embed)
+def test_leaf_nodes_carry_evidence(mock_embed):
+    """P0：叶子节点应透传候选的 evidence（树→日志渲染依赖此字段）。"""
+    candidates = [
+        CandidateItem(topic="RAGFlow检索调优", summary="检索相似度",
+                      evidence="检索相似度计算公式原文", dates=["2026-04-14"]),
+        CandidateItem(topic="MinerU部署", summary="本地部署",
+                      evidence="MinerU 安装命令原文", dates=["2026-04-16"]),
+    ]
+    tree = build_topic_tree(candidates, distance_threshold=0.5, log=lambda m: None)
+
+    leaves = {n.label: n for n in tree.nodes.values() if n.depth == 0}
+    assert leaves["RAGFlow检索调优"].evidence == "检索相似度计算公式原文"
+    assert leaves["MinerU部署"].evidence == "MinerU 安装命令原文"
+
+
+@patch("src.raptor.embed_texts", side_effect=_fake_embed)
+def test_parent_evidence_aggregates_children(mock_embed):
+    """P0：父节点 evidence 应为同簇子节点 evidence 的拼接。"""
+    candidates = [
+        CandidateItem(topic="RAGFlow检索调优", summary="s1",
+                      evidence="证据A", dates=["2026-04-14"]),
+        CandidateItem(topic="RAGFlow切片策略", summary="s2",
+                      evidence="证据B", dates=["2026-04-15"]),
+        CandidateItem(topic="MinerU部署", summary="s3",
+                      evidence="证据C", dates=["2026-04-16"]),
+    ]
+    tree = build_topic_tree(candidates, distance_threshold=0.5, log=lambda m: None)
+
+    # R* 两个候选同簇 → 恰好 1 个父节点
+    parents = [n for n in tree.nodes.values() if n.depth > 0]
+    assert len(parents) == 1
+    assert "证据A" in parents[0].evidence
+    assert "证据B" in parents[0].evidence
+    assert "证据C" not in parents[0].evidence  # MinerU 是独立簇，不进父节点

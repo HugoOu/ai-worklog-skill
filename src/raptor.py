@@ -44,6 +44,7 @@ def _build_leaf_nodes(candidates: List[CandidateItem]) -> List[TopicNode]:
             depth=0,
             label=cand.topic,
             summary=cand.summary,
+            evidence=cand.evidence,  # 证据透传：叶子携带候选的原文证据
             session_ids=cand.session_ids,  # 证据链：来自 CandidateItem 的来源 session 列表
             dates=cand.dates,
         )
@@ -121,11 +122,15 @@ def _merge_nodes_to_parent(
         if len(parent_summary) > 300:
             parent_summary = parent_summary[:297] + "..."
 
+    # 证据：聚合子节点 evidence（分隔符与 embedding.py 簇合并约定一致）
+    parent_evidence = "\n---\n".join(n.evidence for n in child_nodes if n.evidence)
+
     parent = TopicNode(
         node_id=_new_node_id(),
         depth=depth,
         label=parent_label,
         summary=parent_summary,
+        evidence=parent_evidence,
         children=children_ids,
         session_ids=merged_session_ids,
         dates=all_dates,

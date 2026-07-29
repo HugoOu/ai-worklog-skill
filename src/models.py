@@ -143,6 +143,7 @@ class TopicNode(BaseModel):
     depth: int = Field(description="层级深度：0=叶子(session)，1+=聚类产出的上层节点")
     label: str = Field(description="主题名称（LLM 生成或用户手动命名）")
     summary: str = Field(default="", description="该节点覆盖内容的摘要")
+    evidence: str = Field(default="", description="原始证据片段（叶子=CandidateItem.evidence，父节点=子节点拼接，分隔符 '\\n---\\n'）")
     role_hint: Optional[str] = Field(default=None, description="可选语义标签（task/component/project/other），仅供展示，不影响算法")
 
     # 结构关系
@@ -201,6 +202,31 @@ class TopicTree(BaseModel):
         result = []
         for child_id in node.children:
             result.extend(self.get_sessions_under(child_id))
+        return result
+
+    def collect_candidates_under(self, node_id: str) -> List["CandidateItem"]:
+        """递归收集 node_id 子树下所有叶子，投影为 CandidateItem 列表。
+
+        树节点 → 工作日志的衔接点：用户选中任意节点（叶子或上层），自动展开
+        其子树，投影成扁平候选，直接喂给 generator 渲染。
+
+        字段映射：label→topic，summary/evidence/dates/session_ids 透传。
+        节点不存在时返回空列表。
+        """
+        node = self.nodes.get(node_id)
+        if not node:
+            return []
+        if node.depth == 0:
+            return [CandidateItem(
+                topic=node.label,
+                summary=node.summary,
+                evidence=node.evidence,
+                dates=list(node.dates),
+                session_ids=list(node.session_ids),
+            )]
+        result: List["CandidateItem"] = []
+        for child_id in node.children:
+            result.extend(self.collect_candidates_under(child_id))
         return result
 
     def to_json(self, **kwargs) -> str:

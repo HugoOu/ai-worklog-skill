@@ -254,3 +254,59 @@ def test_worklog_data_compat():
         WorkItem(task="task1", detail="detail1", evidence="ev1")
     ])
     assert len(wd.work_items) == 1
+
+
+# ============================================================
+# TopicTree.collect_candidates_under（P1：树→候选投影）
+# ============================================================
+
+def test_collect_candidates_under_leaf():
+    """选叶子 → 单个 CandidateItem，字段一一映射。"""
+    tree = _build_sample_tree()
+    items = tree.collect_candidates_under("sess-001")
+    assert len(items) == 1
+    assert items[0].topic == "MinerU部署对话"
+    assert items[0].session_ids == ["sess-001"]
+    assert items[0].dates == ["2026-04-16"]
+
+
+def test_collect_candidates_under_subtree():
+    """选项目根 → 递归展开全部叶子（决策 1-B：任意节点自动展开子树）。"""
+    tree = _build_sample_tree()
+    items = tree.collect_candidates_under("proj-rag")
+    assert len(items) == 3
+    assert {i.topic for i in items} == {"MinerU部署对话", "MinerU排障", "CoT截断"}
+
+    # 中间层同理
+    items = tree.collect_candidates_under("comp-mineru")
+    assert {i.topic for i in items} == {"MinerU部署对话", "MinerU排障"}
+
+
+def test_collect_candidates_under_missing_node():
+    """节点不存在 → 空列表。"""
+    tree = _build_sample_tree()
+    assert tree.collect_candidates_under("nonexistent") == []
+
+
+def test_collect_candidates_under_carries_evidence():
+    """投影应透传 evidence（P0 字段）。"""
+    nodes = {
+        "leaf1": TopicNode(node_id="leaf1", depth=0, label="任务A", summary="s",
+                           evidence="原文证据A", dates=["2026-01-01"], session_ids=["s1"]),
+        "leaf2": TopicNode(node_id="leaf2", depth=0, label="任务B", summary="s",
+                           evidence="原文证据B", dates=["2026-01-02"], session_ids=["s2"]),
+        "root": TopicNode(node_id="root", depth=1, label="项目", children=["leaf1", "leaf2"],
+                          dates=["2026-01-01", "2026-01-02"]),
+    }
+    nodes["leaf1"].parent_id = "root"
+    nodes["leaf2"].parent_id = "root"
+    tree = TopicTree(
+        meta=TopicTreeMeta(tree_id="t1", created_at="2026-07-30T00:00:00+08:00"),
+        nodes=nodes, root_ids=["root"],
+    )
+
+    items = tree.collect_candidates_under("root")
+    assert len(items) == 2
+    by_topic = {i.topic: i for i in items}
+    assert by_topic["任务A"].evidence == "原文证据A"
+    assert by_topic["任务B"].evidence == "原文证据B"
