@@ -23,9 +23,15 @@ from sklearn.metrics.pairwise import cosine_distances
 from src.models import CandidateItem
 
 # Embedding 配置
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v3")
-# 聚类距离阈值：越小越严格（簇越少、越大）；0.5 是经验值
-CLUSTER_DISTANCE_THRESHOLD = float(os.getenv("CLUSTER_DISTANCE_THRESHOLD", "0.45"))
+# text-embedding-v4（Qwen3-Embedding 系列，阿里百炼 DashScope），默认维度 1024，单次最多 10 条
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
+# 聚类距离阈值：越小越严格（簇越少、越大）。
+# 0.42 经两份独立数据交叉验证确定（ChatGPT 55 候选 / Gemini 41 候选，v4 embedding，
+# average linkage）：该值在两份数据上都是轮廓系数局部峰值，且语义最合理——RAG 大主题
+# 适度聚合，而 MinerU / 船检法规 / PDF-OCR 等独立工作线保持分离；0.44 起会把这些独立
+# 工作线并进巨簇（过合并崩塌点）。更高阈值的轮廓系数"最优"是退化解，不可取。
+# 完整方法学与实验数据见 docs/聚类阈值调优记录.md。
+CLUSTER_DISTANCE_THRESHOLD = float(os.getenv("CLUSTER_DISTANCE_THRESHOLD", "0.42"))
 
 _client: OpenAI | None = None
 

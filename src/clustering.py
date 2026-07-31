@@ -20,8 +20,8 @@ from src.cache import MapCacheStore
 
 # Map 阶段并发数（可通过环境变量覆盖，默认 5）
 MAP_WORKERS = int(os.getenv("MAP_WORKERS", "5"))
-# Map prompt 版本（改 SYSTEM_PROMPT 或 Map 缓存数据结构时递增，触发缓存失效）
-PROMPT_VERSION = "v3"
+# Map prompt 版本（改 SYSTEM_PROMPT、Map 缓存数据结构或 LLM 模型时递增，触发缓存失效）
+PROMPT_VERSION = "v4"
 
 
 class ClusteringStrategy(ABC):
