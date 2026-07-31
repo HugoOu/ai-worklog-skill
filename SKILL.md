@@ -123,12 +123,15 @@ Output: `<outdir>/topic_tree.json` + a rich tree printout in the terminal. Leaf
 nodes carry `session_ids` that link back to the original conversations.
 
 > The topic tree is the **core intermediate artifact** for log generation — not a
-> separate deliverable. Intended workflow: build the tree → user selects nodes at
-> the desired granularity (task / theme / project) → render Markdown log.
-> Note: `generate` currently consumes the flat `candidates.json`; tree-node-driven
-> log generation is the next step and not yet wired up.
+> separate deliverable. Workflow: build the tree → user selects nodes at the
+> desired granularity (task / theme / project) → render Markdown log. Selecting
+> any node auto-expands its entire subtree (see `generate --tree` below).
 
 ### 5. generate — produce a Markdown work log
+
+Two modes (pick one):
+
+**Flat mode** (default, from `candidates.json`):
 
 ```bash
 $PY -m src.cli generate <candidates.json> [--select 2,3,9-11] [--date-range A:B] [--interactive] [--all] [--polish/--no-polish] [-o ./output]
@@ -141,6 +144,22 @@ $PY -m src.cli generate output/candidates.json --all -o ./output            # se
 $PY -m src.cli generate output/candidates.json --select 2,3,9-11            # by index
 $PY -m src.cli generate output/candidates.json --date-range 2026-03-26:2026-06-09
 $PY -m src.cli generate output/candidates.json --all --no-polish            # skip LLM polish
+```
+
+**Tree mode** (`--tree`, tree-as-outline):
+
+```bash
+$PY -m src.cli generate --tree <topic_tree.json> [--nodes <id1>,<id2>] [--interactive] [--polish/--no-polish] [-o ./output]
+```
+
+Each selected node auto-expands its whole subtree; overlapping selections are
+de-duplicated by leaf. With neither `--nodes` nor `--interactive`, all root nodes
+are selected by default. `--interactive` prints a numbered tree to pick from.
+
+```bash
+$PY -m src.cli generate --tree output/topic_tree.json --interactive          # numbered tree, type numbers
+$PY -m src.cli generate --tree output/topic_tree.json --nodes <id1>,<id2>    # specific node ids
+$PY -m src.cli generate --tree output/topic_tree.json --no-polish            # all roots, no LLM polish
 ```
 
 Output: `<outdir>/worklog.md` (YAML frontmatter + date-organized work items).

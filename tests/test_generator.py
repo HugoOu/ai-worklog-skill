@@ -14,8 +14,11 @@ from src.generator import (
     generate_markdown,
     generate_worklog,
     _parse_indices,
+    select_by_tree_nodes,
+    flatten_tree_numbered,
+    interactive_tree_select,
 )
-from src.models import CandidateItem, WorkItem
+from src.models import CandidateItem, WorkItem, TopicTree, TopicTreeMeta, TopicNode
 
 
 # ==========================================
@@ -229,3 +232,124 @@ class TestGenerateWorklog:
         """未选中任何候选时应返回空日志。"""
         md = generate_worklog(sample_candidates, select_indices=[])
         assert "无选中工作项" in md
+
+
+# ==========================================
+# P2：树节点 → 候选投影
+# ==========================================
+
+def _make_tree() -> TopicTree:
+    """构造一棵测试树：
+    root-A (depth=2)
+      ├─ comp-1 (depth=1)
+      │    ├─ leaf-a1 (depth=0)  2026-05-20
+      │    └─ leaf-a2 (depth=0)  2026-05-21
+      └─ leaf-a3 (depth=0)        2026-05-22   （单节点簇直接提升）
+    root-B (depth=1)
+      └─ leaf-b1 (depth=0)        2026-06-01
+    """
+    nodes = {
+        "leaf-a1": TopicNode(node_id="leaf-a1", depth=0, label="RAGFlow分块调优",
+                             summary="s", evidence="e-a1", dates=["2026-05-20"], session_ids=["s1"]),
+        "leaf-a2": TopicNode(node_id="leaf-a2", depth=0, label="RAGFlow检索过滤",
+                             summary="s", evidence="e-a2", dates=["2026-05-21"], session_ids=["s2"]),
+        "leaf-a3": TopicNode(node_id="leaf-a3", depth=0, label="MinerU部署",
+                             summary="s", evidence="e-a3", dates=["2026-05-22"], session_ids=["s3"]),
+        "comp-1": TopicNode(node_id="comp-1", depth=1, label="RAGFlow集成",
+                            children=["leaf-a1", "leaf-a2"], dates=["2026-05-20", "2026-05-21"]),
+        "root-A": TopicNode(node_id="root-A", depth=2, label="船检RAG知识库",
+                            children=["comp-1", "leaf-a3"], dates=["2026-05-20", "2026-05-21", "2026-05-22"]),
+        "leaf-b1": TopicNode(node_id="leaf-b1", depth=0, label="开题报告",
+                             summary="s", evidence="e-b1", dates=["2026-06-01"], session_ids=["s9"]),
+        "root-B": TopicNode(node_id="root-B", depth=1, label="毕业论文",
+                            children=["leaf-b1"], dates=["2026-06-01"]),
+    }
+    meta = TopicTreeMeta(tree_id="t", created_at="2026-07-31T00:00:00+08:00",
+                         total_nodes=len(nodes), depth=3)
+    return TopicTree(meta=meta, nodes=nodes, root_ids=["root-A", "root-B"])
+
+
+def test_select_by_tree_nodes_leaf():
+    """选叶子 → 单候选，字段透传。"""
+    tree = _make_tree()
+    items = select_by_tree_nodes(tree, ["leaf-a1"])
+    assert len(items) == 1
+    assert items[0].topic == "RAGFlow分块调优"
+    assert items[0].evidence == "e-a1"
+    assert items[0].session_ids == ["s1"]
+
+
+def test_select_by_tree_nodes_subtree_expansion():
+    """选上层节点 → 自动展开整棵子树（决策 1-B）。"""
+    tree = _make_tree()
+    items = select_by_tree_nodes(tree, ["root-A"])
+    assert {i.topic for i in items} == {"RAGFlow分块调优", "RAGFlow检索过滤", "MinerU部署"}
+
+
+def test_select_by_tree_nodes_dedup_parent_and_child():
+    """同时选父+子 → 叶子去重，不重复投影（决策 1-B 边界）。"""
+    tree = _make_tree()
+    items = select_by_tree_nodes(tree, ["root-A", "comp-1", "leaf-a1"])
+    # comp-1 和 leaf-a1 的叶子都已被 root-A 覆盖 → 仍只 3 个
+    assert len(items) == 3
+    assert {i.topic for i in items} == {"RAGFlow分块调优", "RAGFlow检索过滤", "MinerU部署"}
+
+
+def test_select_by_tree_nodes_sorted_by_date():
+    """投影结果按 (最早日期, topic) 排序，保证确定性。"""
+    tree = _make_tree()
+    items = select_by_tree_nodes(tree, ["root-B", "root-A"])
+    dates = [i.dates[0] for i in items]
+    assert dates == sorted(dates)
+
+
+def test_select_by_tree_nodes_missing_ignored():
+    """不存在的节点 ID → 忽略，不影响其他节点。"""
+    tree = _make_tree()
+    items = select_by_tree_nodes(tree, ["nonexistent", "leaf-b1"])
+    assert len(items) == 1
+    assert items[0].topic == "开题报告"
+
+
+def test_flatten_tree_numbered_order():
+    """DFS 展平：编号连续，根→子顺序，携带缩进层级。"""
+    tree = _make_tree()
+    rows = flatten_tree_numbered(tree)
+    nums = [r[0] for r in rows]
+    assert nums == list(range(1, len(rows) + 1))  # 编号连续
+    # 第一个是 root-A（depth=2，缩进 0）
+    assert rows[0][1].node_id == "root-A"
+    assert rows[0][2] == 0
+    # root-A 的第一个孩子是 comp-1（缩进 1）
+    assert rows[1][1].node_id == "comp-1"
+    assert rows[1][2] == 1
+
+
+def test_interactive_tree_select_by_number():
+    """交互选择：输入编号 → 投影对应子树。"""
+    tree = _make_tree()
+    rows = flatten_tree_numbered(tree)
+    # 找到 comp-1 的编号
+    comp1_num = next(n for n, node, _ in rows if node.node_id == "comp-1")
+    printed = []
+    items = interactive_tree_select(
+        tree, input_func=lambda _="": str(comp1_num), print_func=printed.append
+    )
+    assert {i.topic for i in items} == {"RAGFlow分块调优", "RAGFlow检索过滤"}
+    assert any("主题树" in line for line in printed)  # 确认打印了树
+
+
+def test_interactive_tree_select_empty_defaults_roots():
+    """交互选择：回车（空输入）→ 默认选中所有根节点 = 全部叶子。"""
+    tree = _make_tree()
+    items = interactive_tree_select(tree, input_func=lambda _="": "", print_func=lambda *_: None)
+    assert len(items) == 4  # a1,a2,a3,b1
+
+
+def test_interactive_tree_select_range():
+    """交互选择：支持范围语法 1-N。"""
+    tree = _make_tree()
+    rows = flatten_tree_numbered(tree)
+    # 选前两个编号（root-A 及其第一个子节点 comp-1），去重后 = root-A 全部叶子
+    items = interactive_tree_select(tree, input_func=lambda _="": "1-2", print_func=lambda *_: None)
+    assert {i.topic for i in items} == {"RAGFlow分块调优", "RAGFlow检索过滤", "MinerU部署"}

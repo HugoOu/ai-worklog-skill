@@ -215,7 +215,11 @@ $PY -m src.cli cluster examples/conversations.json --legacy-reduce
 
 > 缓存：Map 结果按天缓存到 `<outdir>/.map_cache/`。**第二次跑同样输入会命中缓存，0 次 LLM 调用、亚秒级完成**。改了 SYSTEM_PROMPT 或缓存数据结构需递增 `clustering.PROMPT_VERSION` 触发失效。
 
-#### `generate` — 从候选生成 Markdown 工作日志
+#### `generate` — 从候选或主题树生成 Markdown 工作日志
+
+两种模式二选一。
+
+**① 扁平模式**（默认，走 `candidates.json`）：
 
 ```bash
 $PY -m src.cli generate <candidates.json> [--select 2,3,9-11] [--date-range A:B] [--interactive] [--all] [--polish/--no-polish] [-o ./output]
@@ -238,6 +242,26 @@ $PY -m src.cli generate output/candidates.json --interactive
 
 # 不润色（直接用候选原文，省一次 LLM 调用）
 $PY -m src.cli generate output/candidates.json --all --no-polish
+```
+
+**② 树模式**（`--tree`，以树为纲）：
+
+```bash
+$PY -m src.cli generate --tree <topic_tree.json> [--nodes <id1>,<id2>] [--interactive] [--polish/--no-polish] [-o ./output]
+```
+
+选中的每个节点**自动展开整棵子树**；同时选父节点和子节点时按叶子去重，不会重复投影。
+不带 `--nodes`/`--interactive` 时默认选中所有根节点。
+
+```bash
+# 交互式：终端打印带编号的主题树，输入编号选择（回车=全部根节点）
+$PY -m src.cli generate --tree output/topic_tree.json --interactive
+
+# 指定节点 ID（逗号分隔）
+$PY -m src.cli generate --tree output/topic_tree.json --nodes <id1>,<id2>
+
+# 默认全部根节点，不润色
+$PY -m src.cli generate --tree output/topic_tree.json --no-polish
 ```
 
 输出：`<outdir>/worklog.md`（YAML frontmatter + 按日期组织的工作项）。

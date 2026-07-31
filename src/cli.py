@@ -288,8 +288,16 @@ def cluster(
 # ==========================================
 @app.command()
 def generate(
-    candidates_file: Path = typer.Argument(
-        ..., help="candidates.json 路径（cluster 命令的输出）"
+    candidates_file: Optional[Path] = typer.Argument(
+        None, help="candidates.json 路径（cluster 命令的输出）。树模式（--tree）下可省略"
+    ),
+    tree_file: Optional[Path] = typer.Option(
+        None, "--tree",
+        help="topic_tree.json 路径（tree 命令的输出）。提供后从主题树节点投影生成日志",
+    ),
+    nodes: Optional[str] = typer.Option(
+        None, "--nodes",
+        help="树模式下选中的节点 ID（逗号分隔）。每个节点自动展开整棵子树",
     ),
     select: Optional[str] = typer.Option(
         None, "--select", "-s",
@@ -301,7 +309,7 @@ def generate(
     ),
     interactive: bool = typer.Option(
         False, "--interactive", "-i",
-        help="交互式筛选（终端显示候选列表，输入编号选择）",
+        help="交互式筛选（扁平模式显示候选列表；树模式显示带编号的主题树）",
     ),
     all_items: bool = typer.Option(
         False, "--all", help="全选所有候选（不筛选）",
@@ -314,19 +322,22 @@ def generate(
         Path("./output"), "--outdir", "-o", help="输出目录",
     ),
 ):
-    """从候选工作项生成 Markdown 工作日志。
+    """从候选工作项或主题树生成 Markdown 工作日志。
 
-    筛选方式（互斥，优先级从高到低）：
-      --select 2,3,9     指定索引
-      --date-range       日期范围
-      --interactive      交互式选择
-      --all              全选
+    两种模式（二选一）：
 
-    示例:
-      aiworklog generate candidates.json --select 2,3,9 -o ./output
+    ① 扁平模式（默认，走 candidates.json）：
+      aiworklog generate candidates.json --select 2,3,9
       aiworklog generate candidates.json --date-range 2026-05-20:2026-05-21
       aiworklog generate candidates.json --interactive
       aiworklog generate candidates.json --all
+
+    ② 树模式（--tree，以树为纲）：
+      aiworklog generate --tree topic_tree.json --nodes <id1>,<id2>
+      aiworklog generate --tree topic_tree.json --interactive   # 带编号树，输入编号选择
+      aiworklog generate --tree topic_tree.json                 # 默认选中所有根节点
+
+    树模式下选中的每个节点自动展开其整棵子树（投影为候选后复用现有渲染）。
     """
     import json as _json
     from src.models import CandidateItem
@@ -334,6 +345,56 @@ def generate(
         filter_by_indices, filter_by_date_range, interactive_select,
         generate_worklog, _parse_indices,
     )
+
+    # ---------- 树模式 ----------
+    if tree_file:
+        from src.models import TopicTree
+        from src.generator import select_by_tree_nodes, interactive_tree_select
+
+        if not tree_file.exists():
+            console.print(f"[red]错误：主题树文件不存在 {tree_file}[/red]")
+            raise typer.Exit(1)
+
+        topic_tree = TopicTree.from_json(tree_file.read_text(encoding="utf-8"))
+        console.print(
+            f"[cyan]加载主题树[/cyan] {topic_tree.meta.total_nodes} 节点, "
+            f"{len(topic_tree.root_ids)} 个根节点"
+        )
+
+        if nodes:
+            node_ids = [n.strip() for n in nodes.split(",") if n.strip()]
+            selected = select_by_tree_nodes(topic_tree, node_ids)
+            console.print(f"[cyan]树节点筛选[/cyan] {len(node_ids)} 个节点 → {len(selected)} 个候选")
+        elif interactive:
+            selected = interactive_tree_select(topic_tree)
+            console.print(f"[cyan]交互式树选择[/cyan] → {len(selected)} 个候选")
+        else:
+            selected = select_by_tree_nodes(topic_tree, list(topic_tree.root_ids))
+            console.print(f"[cyan]默认选中所有根节点[/cyan] → {len(selected)} 个候选")
+
+        if not selected:
+            console.print("[yellow]未投影出任何候选，退出[/yellow]")
+            raise typer.Exit(0)
+
+        console.print(f"[cyan]生成工作日志[/cyan]（polish={polish}）...")
+        from src.generator import generate_markdown
+        md = generate_markdown(selected, polish)
+
+        outdir.mkdir(parents=True, exist_ok=True)
+        out_file = outdir / "worklog.md"
+        out_file.write_text(md, encoding="utf-8")
+        console.print(f"\n[green]✅ 工作日志已生成：{out_file}[/green]")
+        console.print(f"   含 {len(selected)} 个工作项")
+        console.print("\n[dim]--- 预览（前 500 字符）---[/dim]")
+        console.print(md[:500])
+        if len(md) > 500:
+            console.print("[dim]...（完整内容见 worklog.md）[/dim]")
+        return
+
+    # ---------- 扁平模式（candidates.json）----------
+    if candidates_file is None:
+        console.print("[red]错误：扁平模式需提供 candidates.json 路径，或用 --tree 进入树模式[/red]")
+        raise typer.Exit(1)
 
     if not candidates_file.exists():
         console.print(f"[red]错误：文件不存在 {candidates_file}[/red]")

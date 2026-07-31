@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
 
-from src.models import CandidateItem, WorkItem
+from src.models import CandidateItem, WorkItem, TopicTree, TopicNode
 
 tz_sh = timezone(timedelta(hours=8))
 
@@ -131,6 +131,144 @@ def _parse_indices(raw: str) -> List[int]:
         else:
             indices.append(int(part))
     return indices
+
+
+# ==========================================
+# 树节点 → 候选投影（P2：以树为纲生成日志）
+# ==========================================
+
+def _leaf_ids_under(tree: TopicTree, node_id: str) -> List[str]:
+    """递归收集 node_id 子树下所有叶子节点的 node_id（保序）。"""
+    node = tree.nodes.get(node_id)
+    if not node:
+        return []
+    if node.depth == 0:
+        return [node_id]
+    result: List[str] = []
+    for cid in node.children:
+        result.extend(_leaf_ids_under(tree, cid))
+    return result
+
+
+def _leaf_to_candidate(node: TopicNode) -> CandidateItem:
+    """将叶子 TopicNode 投影为 CandidateItem（字段映射与 collect_candidates_under 一致）。"""
+    return CandidateItem(
+        topic=node.label,
+        summary=node.summary,
+        evidence=node.evidence,
+        dates=list(node.dates),
+        session_ids=list(node.session_ids),
+    )
+
+
+def select_by_tree_nodes(
+    tree: TopicTree, node_ids: List[str]
+) -> List[CandidateItem]:
+    """从主题树的若干节点投影出候选工作项（1-B：任意节点自动展开整棵子树）。
+
+    - 每个节点自动展开其子树下所有叶子（depth=0）
+    - 多个节点选中时，按叶子 node_id 去重（选中父+子不会重复投影同一片叶子）
+    - 投影结果按 (最早日期, topic) 排序，保证确定性
+
+    Args:
+        tree: 主题树
+        node_ids: 选中的节点 ID 列表
+
+    Returns:
+        去重后的候选工作项列表
+    """
+    seen: set[str] = set()
+    ordered_leaf_ids: List[str] = []
+    for nid in node_ids:
+        for leaf_id in _leaf_ids_under(tree, nid):
+            if leaf_id not in seen:
+                seen.add(leaf_id)
+                ordered_leaf_ids.append(leaf_id)
+
+    candidates = [_leaf_to_candidate(tree.nodes[lid]) for lid in ordered_leaf_ids]
+    candidates.sort(key=lambda c: (c.dates[0] if c.dates else "", c.topic))
+    return candidates
+
+
+def flatten_tree_numbered(tree: TopicTree) -> List[tuple[int, TopicNode, int]]:
+    """把主题树按 DFS 展平为带编号的列表，供交互式选择。
+
+    Returns:
+        [(编号, TopicNode, 缩进层级), ...]，编号从 1 开始。
+        编号顺序 = 终端展示顺序，用户输入编号即可选中对应节点（自动展开子树）。
+    """
+    rows: List[tuple[int, TopicNode, int]] = []
+    counter = [0]
+
+    def _walk(node_id: str, indent: int):
+        node = tree.nodes.get(node_id)
+        if not node:
+            return
+        counter[0] += 1
+        rows.append((counter[0], node, indent))
+        for cid in node.children:
+            _walk(cid, indent + 1)
+
+    for root_id in tree.root_ids:
+        _walk(root_id, 0)
+    return rows
+
+
+def interactive_tree_select(
+    tree: TopicTree,
+    input_func=input,
+    print_func=print,
+) -> List[CandidateItem]:
+    """交互式树选择：打印带编号的主题树，用户输入节点编号，投影为候选。
+
+    展示格式（缩进体现层级，[depth] 体现树深）：
+      [ 1] RAGFlow 架构与核心痛点            (depth=2)
+      [ 2]   RAG 基础概念与全流程            (depth=1)
+      [ 3]     RAG 检索机制原理              (depth=0)
+
+    用户选中任意编号 → 自动展开其子树（1-B）。
+
+    Args:
+        tree: 主题树
+        input_func / print_func: 可注入，便于测试
+
+    Returns:
+        投影 + 去重后的候选工作项列表
+    """
+    rows = flatten_tree_numbered(tree)
+    if not rows:
+        print_func("（主题树为空）")
+        return []
+
+    print_func(f"\n主题树（共 {len(rows)} 个节点，选中任意节点自动展开其子树）：\n")
+    for num, node, indent in rows:
+        prefix = "  " * indent
+        dates_str = ", ".join(node.dates) if node.dates else ""
+        leaf_mark = "·" if node.depth == 0 else "▸"
+        line = f"  [{num:2d}] {prefix}{leaf_mark} {node.label}"
+        if dates_str:
+            line += f"  ({dates_str})"
+        print_func(line)
+
+    print_func("\n输入要纳入工作日志的节点编号（逗号分隔，如 1,3,5-7；回车=全部根节点）:")
+    raw = input_func("> ").strip()
+
+    if not raw:
+        # 默认选中所有根节点
+        selected_ids = list(tree.root_ids)
+    else:
+        indices = _parse_indices(raw)
+        selected_ids = []
+        for idx in indices:
+            if 1 <= idx <= len(rows):
+                selected_ids.append(rows[idx - 1][1].node_id)
+            else:
+                print_func(f"  ⚠️ 编号 {idx} 超出范围（1-{len(rows)}），已忽略")
+
+    if not selected_ids:
+        return []
+
+    return select_by_tree_nodes(tree, selected_ids)
 
 
 # ==========================================

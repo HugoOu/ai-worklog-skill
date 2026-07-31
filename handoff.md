@@ -39,7 +39,7 @@ CandidateItem[] (跨天合并)     → candidates.json
 当前已落地的树→日志链路：
 - **P0**：evidence 证据链贯通到 TopicNode（叶子透传、父节点拼接）
 - **P1**：`TopicTree.collect_candidates_under(node_id)` 把子树投影回候选列表
-- **P2**（待实现）：`generate --tree topic_tree.json --nodes ...` CLI 入口 + 交互式树选择
+- **P2**（✅ 已实现）：`generate --tree topic_tree.json --nodes ...` CLI 入口 + 交互式带编号树选择（`generator.select_by_tree_nodes` / `interactive_tree_select`，子树自动展开 + 叶子去重）
 - **P3**（待实现）：`--group-by tree` 层级渲染 + 内置模板预设（预留 `--template` Jinja2 接口）
 
 ---
@@ -298,22 +298,16 @@ $PY -m src.cli tree examples/conversations.json -o ./output    # 确认树构建
 
 ---
 
-## 9. 未来技术路径（P2 + P3 + 远期）
+## 9. 未来技术路径（P3 + 远期）
 
-README 里有完整的演进路线图（① Map-Reduce / ③ Embedding / ③+RAPTOR / ② Agent 的决策对比表）。当前已落地 ③ + RAPTOR + P0/P1 树→日志桥梁。
+README 里有完整的演进路线图（① Map-Reduce / ③ Embedding / ③+RAPTOR / ② Agent 的决策对比表）。当前已落地 ③ + RAPTOR + P0/P1/P2 树→日志全链路。
 
-### 近期（P2 + P3，按 5-B 决策留待下轮）
-
-**P2 — CLI 入口 + 交互式树选择**：
-- `generate --tree topic_tree.json --nodes <id1,id2,...>` 命令行入口
-- `--interactive` 模式：rich Tree 展示 + 用户勾选节点
-- 内部调 `collect_candidates_under()` → 复用现有 `generate_markdown()`
-- 保留 4-A：无 `--tree` 时走现有扁平 `candidates.json` 路径
+### 近期（P3，按 5-B 决策留待下轮）
 
 **P3 — 层级渲染 + 模板系统**：
-- `--group-by tree`（默认）：按树层级组织 Markdown 标题结构（depth-0 = h3，depth-1 = h2，root = h1）
+- `--group-by tree`（决策 2-C 默认）：按树层级组织 Markdown 标题结构（depth-0 = h3，depth-1 = h2，root = h1）。当前树模式仍复用 `generate_markdown` 的按日期分组渲染。
 - `--group-by date`：现有按日期分组
-- 内置预设模板（日报 / 周报 / 月报），3-A 决策
+- 内置预设模板（日报 / 周报 / 月报），决策 3-A
 - 预留 `--template path/to/custom.j2` Jinja2 自定义接口
 
 ### 远期候选（按性价比排序）
@@ -332,6 +326,8 @@ README 里有完整的演进路线图（① Map-Reduce / ③ Embedding / ③+RAP
 最近 git 历史（新→旧）：
 
 ```
+e6d1452  feat(cluster): embedding v4 + qwen3.7-max + tuned threshold 0.42
+c027a60  docs: rewrite handoff.md — full state snapshot post P0+P1
 4f6fa59  docs: tree-driven worklog framing + platform-agnostic SKILL.md
 49074ae  feat(tree): P0+P1 — evidence on TopicNode and tree-to-candidate projection
 9509b5a  fix: restore evidence/session_ids in Map cache and align MCP with embedding clustering
@@ -344,4 +340,4 @@ e8438f8  feat: embedding clustering + Map cache + RAPTOR topic tree + session ev
 - 项目是宇豪"个人日常管理系统"的一部分，也是他 AI Agent 方向的作品集素材——代码质量、可复现性、确定性这些点对他很重要，改动时尽量保持。
 - 工作日志记录在 `.workbuddy/memory/YYYY-MM-DD.md`（append-only），长期决策在 `.workbuddy/memory/MEMORY.md`。
 - 遇到拿不准的架构选择，先问宇豪——他对此项目的方向（确定性、层级结构、证据可追溯、以树为纲）有明确主张，且会直接指出拍脑袋的设计。
-- **下一步行动的起点**：实现 P2（`generate --tree` CLI 入口），所有设计决策已在 §6 锁定，无需再讨论方向。
+- **下一步行动的起点**：P3（`--group-by tree` 层级渲染 + 内置模板预设），其余设计决策已在 §6 锁定，无需再讨论方向。
