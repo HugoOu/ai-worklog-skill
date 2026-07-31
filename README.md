@@ -23,10 +23,10 @@ ai-worklog-skill/
 │   ├── models.py           # 数据模型全家桶
 │   ├── extractor.py        # LLM Map + Reduce 逻辑、JSON 截断修复
 │   ├── cache.py            # MapCacheStore：按 content_hash 的磁盘缓存
-│   ├── embedding.py        # embed_texts() + cluster_candidates()（DashScope embedding）
-│   ├── raptor.py           # build_topic_tree()：递归聚类建树
+│   ├── embedding.py        # embed_texts() + cluster_candidates()（DashScope text-embedding-v4）
+│   ├── raptor.py           # build_topic_tree()：递归聚类建树（evidence 逐层聚合）
 │   ├── clustering.py       # ClusteringStrategy 抽象 + MapReduce / Embedding 两种实现
-│   ├── generator.py        # 候选筛选 + Markdown 工作日志生成
+│   ├── generator.py        # 候选/树节点筛选 + Markdown 工作日志生成
 │   ├── mcp_server.py       # MCP server 包装（parse / cluster / list_adapters / generate）
 │   ├── parser.py           # 早期遗留独立解析器（主链路不走这里）
 │   └── adapters/
@@ -34,8 +34,10 @@ ai-worklog-skill/
 │       ├── base.py         # BaseAdapter 抽象（provider / detect() / parse()）
 │       ├── chatgpt.py      # ✅ ChatGPT 导出解析
 │       └── gemini.py       # ✅ Gemini My Activity HTML 解析
+├── scripts/                # 运维脚本（tune_cluster_threshold.py 聚类阈值调优）
+├── docs/                   # 设计文档（聚类阈值调优记录、开源侦察报告、实现路径）
 ├── examples/               # 样本数据（conversations.json 为敏感真实数据，gitignore）
-├── tests/                  # 116 个单元测试（pytest）
+├── tests/                  # 131 个单元测试（pytest）
 └── output/                 # 运行产物（unified_sessions / daily_conversations / candidates / topic_tree / worklog）
 ```
 
@@ -63,8 +65,9 @@ class ClusteringStrategy(ABC):
 
 #### ③ Embedding + 聚类算法（✅ 当前默认实现）
 
-- 对每个对话块做向量化（当前用 DashScope `text-embedding-v3`，OpenAI 兼容端点）
-- 用层次聚类（`AgglomerativeClustering` + 余弦距离）跨天自动成簇（相似度与日期无关，天然解决跨天归组）
+- 对每个对话块做向量化（当前用 DashScope `text-embedding-v4`，Qwen3-Embedding 系列，OpenAI 兼容端点）
+- 用层次聚类（`AgglomerativeClustering` + 余弦距离 + average linkage）跨天自动成簇（相似度与日期无关，天然解决跨天归组）
+- 默认距离阈值 **0.42**，经 ChatGPT / Gemini 两份独立数据交叉验证（方法见 `docs/聚类阈值调优记录.md`）
 - Map 阶段（日级候选提取）带磁盘缓存，相同输入不重复调 LLM；聚类为确定性操作，两次运行结果完全一致
 - **定位**：解决①的扩展性和不确定性问题；向量化 O(n)，可扛上万条对话
 - **迁移方式**：新增 `EmbeddingClustering(ClusteringStrategy)`，替换策略实例即可，接口与下游不变
@@ -130,12 +133,14 @@ cd C:\Users\Exception2Rule\ai-worklog-skill
 
 ```bash
 OPENAI_API_KEY=<你的 key>
-OPENAI_BASE_URL=<DashScope OpenAI 兼容端点>
-LLM_MODEL=<如 qwen3.7-flash>
-# 可选：EMBEDDING_MODEL=text-embedding-v3（默认即是）
+OPENAI_BASE_URL=<DashScope OpenAI 兼容端点，如 https://dashscope.aliyuncs.com/compatible-mode/v1>
+LLM_MODEL=<如 qwen3.7-max-2026-05-17>
+# 可选：EMBEDDING_MODEL=text-embedding-v4（默认即是）
 ```
 
-> 提示：`parse` / `parse-batch` / `adapters` **不需要** LLM 配置；`cluster` / `generate` / `tree` 需要。
+> **换 LLM 模型必读**：Map 缓存只校验 `prompt_version`，不校验模型名。改 `LLM_MODEL` 后若想让新模型真正生效，需递增 `src/clustering.py` 的 `PROMPT_VERSION`（当前 `"v4"`）使旧缓存失效，否则会命中旧缓存、新模型不被调用。
+
+> 提示：`parse` / `parse-batch` / `adapters` **不需要** LLM 配置；`cluster` / `generate`（润色时）/ `tree` 需要。
 
 为方便，下文用环境变量 `PY` 代指解释器（Git Bash）：
 
@@ -146,7 +151,7 @@ PY=.venv/Scripts/python.exe
 ### 1. 健康检查（接手后先跑这些，确认环境 OK）
 
 ```bash
-# 1.1 全量单元测试（不联网、不花钱，期望 116 passed）
+# 1.1 全量单元测试（不联网、不花钱，期望 131 passed）
 $PY -m pytest tests/ -q
 
 # 1.2 列出已注册的平台 adapter（应看到 openai + google）
@@ -269,23 +274,22 @@ $PY -m src.cli generate --tree output/topic_tree.json --no-polish
 #### `tree` — 构建 RAPTOR 层级主题树
 
 ```bash
-$PY -m src.cli tree <input1> <input2> ... [-o ./output] [--tz Asia/Shanghai] [-t/--threshold 0.45]
+$PY -m src.cli tree <input1> <input2> ... [-o ./output] [--tz Asia/Shanghai] [-t/--threshold 0.42]
 ```
 
 流程：parse → bridge → Map（带缓存）→ 递归 Embedding 聚类 → TopicTree。
 
 ```bash
-# 默认阈值
+# 默认阈值（0.42）
 $PY -m src.cli tree examples/conversations.json -o ./output
 
 # 更严格的聚类（阈值越小，簇越少、聚合越狠）
 $PY -m src.cli tree examples/conversations.json -t 0.3 -o ./output
 ```
 
-输出：`<outdir>/topic_tree.json` + 终端 rich 树状图打印。叶子节点 `session_ids` 可回链到原始对话。
+输出：`<outdir>/topic_tree.json` + 终端 rich 树状图打印。每个节点（含父节点）携带 `evidence`；叶子节点 `session_ids` 可回链到原始对话。
 
-> **定位**：主题树是生成工作日志的**核心中间产物**，不是独立产出线。目标工作流是：先建树 → 用户在树中按粒度（任务/主题/项目）选取需要的节点 → 按指定需求或模板渲染 Markdown 日志。
-> **当前状态**：`generate` 命令暂直接消费 `candidates.json`（扁平候选）；"从树节点选取 → 生成日志"的衔接是下一步方向（见 handoff.md §8），尚未接入。
+> **定位**：主题树是生成工作日志的**核心中间产物**，不是独立产出线。完整工作流：先 `tree` 建树 → 再 `generate --tree` 在树中按粒度（任务/主题/项目）选取节点 → 渲染 Markdown 日志。树模式已由 `generate --tree` 接通（见上文 generate ②）。
 
 #### `query` — 查询落库对话（占位，Phase 2 未实现）
 
@@ -305,17 +309,47 @@ $PY -c "import json; d=json.load(open('output/candidates.json',encoding='utf-8')
 $PY -c "import json; t=json.load(open('output/topic_tree.json',encoding='utf-8')); print('nodes',t['meta']['total_nodes'],'depth',t['meta']['depth'],'roots',len(t['root_ids']))"
 ```
 
-预期（以 examples/conversations.json 为例）：
-- `candidates.json`：4 个候选，每个 `evidence` 非空（约 100–160 字符）、`session_ids` 含 1 个 UUID
-- `topic_tree.json`：4 节点 / depth=1，每个叶子 `session_ids` 非空
+预期（以 examples/conversations.json 为例，数据较小）：
+- `candidates.json`：4 个候选，每个 `evidence` 非空、`session_ids` 含 1 个 UUID
+- `topic_tree.json`：4 个根节点 / depth=1（数据太少，聚类收敛在单层）；想看真正的多层树，用 `examples/ai_history.html`（见 §3.5 演练，可建出 4 层 / 51 节点的树）
+
+### 3.5 端到端演练：建树 → 选节点 → 生成日志（推荐照着敲一遍）
+
+下面用 Gemini 样本 `examples/ai_history.html` 走一遍**树驱动的完整工作流**。它会建出一棵真正的多层主题树，让你体验"在树里挑主题 → 生成日志"。
+
+```bash
+PY=.venv/Scripts/python.exe
+
+# ① 建树（parse → 按天归集 → Map 带缓存 → 递归聚类）。首次跑会调 LLM 提取 14 天候选，需联网。
+$PY -m src.cli tree examples/ai_history.html -p google -o ./output
+#   终端会打印 rich 树状图，并写出 output/topic_tree.json
+
+# ② 看树结构：几个根节点、深度、各根覆盖多少叶子
+$PY -c "import json; t=json.load(open('output/topic_tree.json',encoding='utf-8')); m=t['meta']; print('nodes',m['total_nodes'],'depth',m['depth'],'roots',len(t['root_ids'])); [print(' ',rid[:8], t['nodes'][rid]['label'][:36]) for rid in t['root_ids']]"
+
+# ③ 交互式选节点生成日志（终端打印带编号的树，敲编号选择，回车=全部根节点）
+$PY -m src.cli generate --tree output/topic_tree.json --interactive -o ./output
+#   例如看到 [ 1] ▸ RAGFlow... 就敲 1，回车
+
+# ④ 或直接指定节点 ID（把第②步打印的某个 root id 填进去）
+$PY -m src.cli generate --tree output/topic_tree.json --nodes <node_id> --no-polish -o ./output
+
+# ⑤ 看产出
+cat output/worklog.md
+```
+
+要点：
+- 第③/④步选中的每个节点会**自动展开整棵子树**；选父节点 + 子节点时按叶子去重，不会重复。
+- `--no-polish` 直接用候选原文（省一次 LLM 调用）；去掉它则会调 LLM 润色成第一人称日志。
+- 树模式与扁平模式二选一：不带 `--tree` 就走 `candidates.json` 扁平路径。
 
 ### 4. 可调环境变量
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `MAP_WORKERS` | 5 | Map 阶段并发线程数 |
-| `CLUSTER_DISTANCE_THRESHOLD` | 0.45 | 聚类距离阈值（越小越严格） |
-| `EMBEDDING_MODEL` | text-embedding-v3 | DashScope embedding 模型 |
+| `CLUSTER_DISTANCE_THRESHOLD` | 0.42 | 聚类距离阈值（越小越严格；经双数据集调优，见 docs/聚类阈值调优记录.md） |
+| `EMBEDDING_MODEL` | text-embedding-v4 | DashScope embedding 模型（Qwen3-Embedding） |
 | `RAPTOR_MAX_DEPTH` | 5 | 主题树最大递归深度 |
 | `RAPTOR_MIN_TOP_NODES` | 2 | 顶层节点数 ≤ 此值停止聚合 |
 | `LLM_MAX_TOKENS` | 8192 | Map 阶段单次输出上限 |
@@ -334,8 +368,9 @@ $PY -m src.mcp_server
 ### 6. 测试
 
 ```bash
-$PY -m pytest tests/ -q          # 116 passed，全 mock 不打 API
+$PY -m pytest tests/ -q          # 131 passed，全 mock 不打 API
 $PY -m pytest tests/test_raptor.py -v   # 单看 RAPTOR 树测试
+$PY -m pytest tests/test_generator.py -v   # 单看筛选/树投影/Markdown 测试
 ```
 
 `tests/legacy/` 下是早期脚本式示例，pytest 不收集（见 pyproject.toml `norecursedirs`）。
